@@ -6,8 +6,8 @@
 
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "target": "esnext",
-    "lib": ["esnext"],
+    "target": "es2024",
+    "lib": ["es2024"],
     "types": ["node"],
 
     "sourceMap": true,

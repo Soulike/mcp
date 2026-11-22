@@ -8,6 +8,7 @@
     "*.json"
   ],
   "exports": {
-    "./node.json": "./node.json"
+    "./node.json": "./node.json",
+    "./mcp-server.json": "./mcp-server.json"
   }
 }

@@ -6,7 +6,7 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 - `servers/*`: Individual MCP servers. Publishable servers are named `@soulike/<name>-mcp` with a `bin` entry for `npx`.
 - `packages/*`: Internal shared packages (`@repo/*`, `"private": true`).
-- `configs/tsconfig`: `@repo/tsconfig` (`"private": true`), exporting `@repo/tsconfig/node.json`. Extend `@repo/tsconfig/node.json` in workspace `tsconfig.json` files instead of using relative `../../` paths.
+- `configs/tsconfig`: `@repo/tsconfig` (`"private": true`), exporting `@repo/tsconfig/node.json` (base Node config for libraries and scripts) and `@repo/tsconfig/mcp-server.json` (extends `node.json` with `declaration`, `declarationMap`, and `sourceMap` disabled for CLI MCP server packages). Extend `@repo/tsconfig/*` in workspace `tsconfig.json` files instead of using relative `../../` paths.
 - `scripts/*`: Internal repository automation and CI scripts (`@repo/*`, `"private": true`).
 - Root owns `eslint.config.mjs`, `pnpm-workspace.yaml`, `.prettierignore`, and root `package.json` (`prettier`, `commitlint`, `lint-staged`). Keep workspace packages free of local `eslint.config.*` files so the root flat config remains the single final layer.
 

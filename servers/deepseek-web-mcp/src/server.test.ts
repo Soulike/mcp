@@ -56,11 +56,13 @@ await describe('deepseek-web-mcp server', async () => {
       assert.deepEqual(
         tools.map((tool) => ({
           name: tool.name,
+          title: tool.title,
           annotations: tool.annotations,
         })),
         [
           {
             name: 'deepseek_search',
+            title: 'Web Search',
             annotations: {
               readOnlyHint: true,
               idempotentHint: false,
@@ -69,6 +71,7 @@ await describe('deepseek-web-mcp server', async () => {
           },
           {
             name: 'deepseek_fetch',
+            title: 'Web Page Fetch',
             annotations: {
               readOnlyHint: true,
               idempotentHint: false,
@@ -77,6 +80,12 @@ await describe('deepseek-web-mcp server', async () => {
           },
         ],
       );
+      for (const tool of tools) {
+        assert.ok(
+          tool.description !== undefined && tool.description.length > 0,
+        );
+        assert.ok(tool.outputSchema);
+      }
     });
   });
 
@@ -153,10 +162,51 @@ await describe('deepseek-web-mcp server', async () => {
         assert.match(text, /https:\/\/example\.com\/deepseek-v4/);
         assert.match(text, /Example News/);
         assert.match(text, /2026-06-01T00:00:00\+00:00/);
-        assert.match(text, /2\.4/);
-        assert.match(text, /3/);
+        assert.match(text, /Score: 2\.4\/3/);
+        assert.match(text, /Authority: 3\/4/);
         assert.match(text, /DeepSeek released V4 with improved tool calling\./);
         assert.match(text, /Full article body about DeepSeek V4\./);
+      },
+    );
+  });
+
+  await it('omits unknown authority (-1) from search Markdown while preserving it in structuredContent', async () => {
+    const unknownAuthorityResult = {
+      rerank_score: 1.8,
+      title: 'Blog Post',
+      url: 'https://example.com/post',
+      snippet: 'Short snippet.',
+      summary: 'Longer summary.',
+      content: '',
+      site_name: null,
+      site_icon: null,
+      date: null,
+      authority: -1,
+    };
+
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ results: [unknownAuthorityResult] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'blog post' },
+        });
+
+        assert.equal(result.isError, undefined);
+        assert.deepEqual(result.structuredContent, {
+          results: [unknownAuthorityResult],
+        });
+        const text = getFirstTextContent(result);
+        assert.match(text, /Score: 1\.8\/3/);
+        assert.doesNotMatch(text, /Authority:/);
       },
     );
   });
@@ -180,9 +230,9 @@ await describe('deepseek-web-mcp server', async () => {
 
         assert.equal(result.isError, undefined);
         assert.deepEqual(result.structuredContent, { results: [] });
-        assert.equal(
+        assert.match(
           getFirstTextContent(result),
-          'No results found for "obscure nonexistent query".',
+          /^No results found for "obscure nonexistent query"\./,
         );
       },
     );
@@ -277,7 +327,39 @@ await describe('deepseek-web-mcp server', async () => {
         });
         assert.equal(
           getFirstTextContent(result),
-          '# Example Article\n\n# Example Article\n\nBody text.',
+          '# Example Article\n\nBody text.',
+        );
+      },
+    );
+  });
+
+  await it('prepends fetch title heading when Markdown body does not start with it', async () => {
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            title: 'Example Article',
+            content: 'Paragraph without top heading.',
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/plain' },
+        });
+
+        assert.equal(result.isError, undefined);
+        assert.equal(
+          getFirstTextContent(result),
+          '# Example Article\n\nParagraph without top heading.',
         );
       },
     );
@@ -350,7 +432,7 @@ await describe('deepseek-web-mcp server', async () => {
     );
   });
 
-  await it('maps upstream DeepSeek JSON and non-JSON HTTP errors to tool errors', async () => {
+  await it('maps upstream DeepSeek JSON and non-JSON HTTP errors to actionable tool errors', async () => {
     const responseQueue: Response[] = [
       new Response(
         JSON.stringify({
@@ -363,6 +445,7 @@ await describe('deepseek-web-mcp server', async () => {
         }),
         { status: 402, headers: { 'content-type': 'application/json' } },
       ),
+      new Response('Not Found', { status: 404 }),
       new Response('Bad Gateway', { status: 502 }),
     ];
 
@@ -385,6 +468,17 @@ await describe('deepseek-web-mcp server', async () => {
         assert.match(balanceText, /402/);
         assert.match(balanceText, /insufficient_balance/);
         assert.match(balanceText, /Insufficient balance/);
+        assert.match(balanceText, /do not retry/i);
+
+        const notFoundError = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/missing' },
+        });
+        assert.equal(notFoundError.isError, true);
+        assert.equal(notFoundError.structuredContent, undefined);
+        const notFoundText = getFirstTextContent(notFoundError);
+        assert.match(notFoundText, /404/);
+        assert.match(notFoundText, /try another URL/i);
 
         const gatewayError = await client.callTool({
           name: 'deepseek_fetch',
@@ -395,6 +489,7 @@ await describe('deepseek-web-mcp server', async () => {
         const gatewayText = getFirstTextContent(gatewayError);
         assert.match(gatewayText, /502/);
         assert.match(gatewayText, /Bad Gateway/);
+        assert.match(gatewayText, /retry/i);
       },
     );
   });

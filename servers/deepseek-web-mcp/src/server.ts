@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
+  fetchResponseSchema,
   requestDeepSeekFetch,
   requestDeepSeekSearch,
   searchResultSchema,
@@ -47,13 +48,30 @@ function formatFetchMarkdown(data: FetchResponse): string {
   if (data.title === '') {
     return data.content;
   }
+  if (data.content === '') {
+    return `# ${data.title}`;
+  }
+  const firstNonEmptyLine = data.content
+    .split('\n')
+    .find((line) => line.trim() !== '');
+  if (firstNonEmptyLine?.trim() === `# ${data.title.trim()}`) {
+    return data.content;
+  }
   return `# ${data.title}\n\n${data.content}`;
 }
 
 const SEARCH_DESCRIPTION = [
-  'Search the web using DeepSeek Search API.',
-  'Supports DeepSeek search operators inside `query`:',
-  '`site:example.com`, `-site:example.com`, `-keyword`, `-"phrase"`, `"exact phrase"`, `lang:zh,en`, `after:YYYY-MM-DD`, `before:YYYY-MM-DD`.',
+  'Search live web pages when you need up-to-date information or do not have a specific URL yet.',
+  'Returns ranked results with URLs, publish dates, quality/authority scores, and ~600-800 character summaries.',
+  'By default full page bodies are omitted (`need_content=false`); prefer reviewing summaries first and calling `deepseek_fetch` on selected URLs rather than enabling `need_content=true` across many results.',
+  'Limitations: text web search only—does not support image search.',
+  'Query operators: join multiple `site:` filters with `OR` (`site:a.com OR site:b.com`); separate `-site:`, `-term`, `-"phrase"`, and `"exact phrase"` with spaces; use comma-separated language codes (`lang:zh,en`); and use `after:YYYY` / `after:YYYY-MM-DD` or `before:YYYY` / `before:YYYY-MM-DD` for date bounds.',
+].join(' ');
+
+const FETCH_DESCRIPTION = [
+  'Fetch a single public web page and extract its content as Markdown.',
+  'Use when you already have a concrete `http://` or `https://` URL (from the user or a `deepseek_search` result) and need the full page text rather than a search summary.',
+  'Limitations: fetches one public page per call; cannot log into authenticated/paywalled pages, read binary files, or bypass sites that block automated access (which fail with HTTP 403 or 404).',
 ].join(' ');
 
 function formatSearchResult(result: SearchResult, index: number): string {
@@ -68,8 +86,10 @@ function formatSearchResult(result: SearchResult, index: number): string {
   if (result.date !== null && result.date !== '') {
     metadata.push(`Date: ${result.date}`);
   }
-  metadata.push(`Score: ${result.rerank_score}`);
-  metadata.push(`Authority: ${result.authority}`);
+  metadata.push(`Score: ${result.rerank_score}/3`);
+  if (result.authority >= 0) {
+    metadata.push(`Authority: ${result.authority}/4`);
+  }
   lines.push(`- ${metadata.join(' | ')}`);
 
   const overview = result.summary !== '' ? result.summary : result.snippet;
@@ -85,7 +105,7 @@ function formatSearchResult(result: SearchResult, index: number): string {
 
 function formatSearchMarkdown(query: string, data: SearchResponse): string {
   if (data.results.length === 0) {
-    return `No results found for "${query}".`;
+    return `No results found for "${query}". Try broadening the keywords or removing restrictive site:/date/language operators.`;
   }
   return data.results.map(formatSearchResult).join('\n\n---\n\n');
 }
@@ -109,7 +129,7 @@ const MISSING_API_KEY_RESULT = {
   content: [
     {
       type: 'text' as const,
-      text: 'DEEPSEEK_API_KEY is not configured.',
+      text: 'DEEPSEEK_API_KEY is not set. Configure DEEPSEEK_API_KEY in the MCP server environment and restart the server; do not retry until configured.',
     },
   ],
   isError: true,
@@ -125,22 +145,24 @@ export function createServer(options?: ServerOptions): McpServer {
   server.registerTool(
     'deepseek_search',
     {
+      title: 'Web Search',
       description: SEARCH_DESCRIPTION,
       inputSchema: {
         query: z
           .string()
-          .min(1)
+          .min(1, 'query cannot be empty. Provide 1-128 Unicode characters.')
           .refine((value) => value.trim().length > 0, {
-            message: 'query must not be only whitespace',
+            message:
+              'query cannot be only whitespace. Provide search terms (1-128 Unicode characters), e.g. "TypeScript release notes".',
           })
           .refine(
             (value) => codePointLength(value) <= MAX_SEARCH_TEXT_CODE_POINTS,
             {
-              message: `query must be at most ${MAX_SEARCH_TEXT_CODE_POINTS} Unicode characters`,
+              message: `query must be at most ${MAX_SEARCH_TEXT_CODE_POINTS} Unicode characters; shorten the query or remove extra modifiers.`,
             },
           )
           .describe(
-            'Search query (1-128 Unicode characters, non-whitespace). Supports site:, -site:, -, -"...", "...", lang:, after:, before:.',
+            'Search query (1-128 Unicode characters, not all whitespace), e.g. \'"release notes" site:github.com after:2025-01-01\'. Keep focused and do not append unnecessary year tokens unless filtering by time.',
           ),
         count: z
           .number()
@@ -148,34 +170,42 @@ export function createServer(options?: ServerOptions): McpServer {
           .min(1)
           .max(50)
           .optional()
-          .describe('Number of results to return (1-50, default 10).'),
+          .describe(
+            'Number of results to return (integer 1-50, default 10). Use a smaller count (e.g. 5) when need_content is true to avoid context bloat.',
+          ),
         ori_question: z
           .string()
           .min(1)
           .refine(
             (value) => codePointLength(value) <= MAX_SEARCH_TEXT_CODE_POINTS,
             {
-              message: `ori_question must be at most ${MAX_SEARCH_TEXT_CODE_POINTS} Unicode characters`,
+              message: `ori_question must be at most ${MAX_SEARCH_TEXT_CODE_POINTS} Unicode characters; summarize concisely or omit it.`,
             },
           )
           .nullable()
           .optional()
           .describe(
-            'Optional original user question (1-128 characters, or null) to improve search intent understanding.',
+            'Optional original natural-language user question (1-128 Unicode characters, or null) when query has been distilled into keywords/operators, to improve intent ranking.',
           ),
         localization: z
           .string()
           .optional()
-          .describe('Optional IP address for localized search results.'),
+          .describe(
+            'Optional client IP address (e.g. "203.0.113.10") for region-localized results. Omit unless a real user/client IP is known; never invent an IP.',
+          ),
         need_content: z
           .boolean()
           .optional()
           .describe(
-            'Whether to include full page content in results (default false).',
+            'Include full page body in each result (default false). Leave false when summaries suffice or when fetching only selected URLs with deepseek_fetch.',
           ),
       },
       outputSchema: {
-        results: z.array(searchResultSchema),
+        results: z
+          .array(searchResultSchema)
+          .describe(
+            'Ordered search results (empty array when nothing matches).',
+          ),
       },
       annotations: TOOL_ANNOTATIONS,
     },
@@ -221,7 +251,8 @@ export function createServer(options?: ServerOptions): McpServer {
   server.registerTool(
     'deepseek_fetch',
     {
-      description: 'Fetch a web page as Markdown using DeepSeek Fetch API.',
+      title: 'Web Page Fetch',
+      description: FETCH_DESCRIPTION,
       inputSchema: {
         url: z
           .string()
@@ -229,16 +260,13 @@ export function createServer(options?: ServerOptions): McpServer {
           .max(MAX_FETCH_URL_LENGTH)
           .refine(isValidFetchUrl, {
             message:
-              'url must be an http:// or https:// URL with a host and no credentials',
+              'url must be a public http:// or https:// URL with a host and no embedded username or password, e.g. "https://example.com/article".',
           })
           .describe(
-            'Web page URL to fetch (http/https, max 8192 characters, no username or password).',
+            'Public http:// or https:// URL with a host and no credentials (max 8192 characters), e.g. "https://example.com/article".',
           ),
       },
-      outputSchema: {
-        title: z.string(),
-        content: z.string(),
-      },
+      outputSchema: fetchResponseSchema.shape,
       annotations: TOOL_ANNOTATIONS,
     },
     async (args, extra) => {

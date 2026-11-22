@@ -4,16 +4,44 @@ const DEEPSEEK_API_BASE_URL = 'https://api.deepseek.com';
 const REQUEST_TIMEOUT_MS = 60_000;
 
 export const searchResultSchema = z.object({
-  rerank_score: z.number(),
-  title: z.string(),
-  url: z.string(),
-  snippet: z.string(),
-  summary: z.string(),
-  content: z.string(),
-  site_name: z.string().nullable(),
-  site_icon: z.string().nullable(),
-  date: z.string().nullable(),
-  authority: z.number().int(),
+  rerank_score: z
+    .number()
+    .describe(
+      'Relevance and quality score from 0 to 3 (>= 1.5 indicates a high-quality result).',
+    ),
+  title: z.string().describe('Result page title.'),
+  url: z.string().describe('Result page URL.'),
+  snippet: z
+    .string()
+    .describe('Short excerpt (~100-200 characters) for brief previews.'),
+  summary: z
+    .string()
+    .describe(
+      'Longer query-focused summary (~600-800 characters) suited for LLM reading.',
+    ),
+  content: z
+    .string()
+    .describe(
+      'Full extracted page body; empty string when need_content is false or unavailable.',
+    ),
+  site_name: z
+    .string()
+    .nullable()
+    .describe('Publisher or site name, or null if unknown.'),
+  site_icon: z
+    .string()
+    .nullable()
+    .describe('Site favicon URL, or null if unknown.'),
+  date: z
+    .string()
+    .nullable()
+    .describe('Publication timestamp in UTC RFC 3339 format, or null.'),
+  authority: z
+    .number()
+    .int()
+    .describe(
+      'Source authority score from 0 to 4 (>= 3 is highly authoritative; -1 means unknown).',
+    ),
 });
 
 export type SearchResult = z.infer<typeof searchResultSchema>;
@@ -25,8 +53,8 @@ export const searchResponseSchema = z.object({
 export type SearchResponse = z.infer<typeof searchResponseSchema>;
 
 export const fetchResponseSchema = z.object({
-  title: z.string(),
-  content: z.string(),
+  title: z.string().describe('Extracted page title, or empty string.'),
+  content: z.string().describe('Extracted page body in Markdown.'),
 });
 
 export type FetchResponse = z.infer<typeof fetchResponseSchema>;
@@ -52,10 +80,45 @@ const deepSeekErrorSchema = z.object({
   }),
 });
 
+function getStatusGuidance(
+  operation: 'Search' | 'Fetch',
+  status: number,
+): string {
+  switch (status) {
+    case 400:
+    case 413:
+      return 'Adjust the request parameters and retry.';
+    case 401:
+      return 'DEEPSEEK_API_KEY is missing or invalid; do not retry until the user fixes credentials.';
+    case 402:
+      return 'DeepSeek account balance is insufficient; do not retry until the user adds credit.';
+    case 403:
+      return operation === 'Fetch'
+        ? 'Target URL was rejected by security policy; do not retry this URL—try a different source.'
+        : 'Request was forbidden; do not retry unchanged.';
+    case 404:
+      return operation === 'Fetch'
+        ? 'No extractable Markdown content at this URL (unreachable, blocked, unsupported content type, or empty page); do not retry this URL—try another URL or use search summaries.'
+        : 'Resource not found; do not retry unchanged.';
+    case 408:
+    case 500:
+    case 504:
+      return 'Transient upstream timeout or server error; safe to retry after a brief pause.';
+    case 429:
+      return 'Rate limit exceeded; pause briefly and reduce concurrent calls before retrying.';
+    default:
+      if (status >= 500) {
+        return 'Transient upstream server error; safe to retry after a brief pause.';
+      }
+      return 'Do not retry without changing the request.';
+  }
+}
+
 async function formatHttpErrorMessage(
   operation: 'Search' | 'Fetch',
   response: Response,
 ): Promise<string> {
+  const guidance = getStatusGuidance(operation, response.status);
   const rawBody = (await response.text()).trim();
   if (rawBody !== '') {
     try {
@@ -68,14 +131,14 @@ async function formatHttpErrorMessage(
             value !== undefined && value !== null && value !== '',
         );
         const tagSuffix = tags.length > 0 ? ` [${tags.join(' / ')}]` : '';
-        return `DeepSeek ${operation} API failed (HTTP ${response.status}${tagSuffix}): ${message}`;
+        return `DeepSeek ${operation} failed (HTTP ${response.status}${tagSuffix}): ${message}. ${guidance}`;
       }
     } catch {
       // Fall through to raw text body when error payload is not JSON.
     }
-    return `DeepSeek ${operation} API failed (HTTP ${response.status}): ${rawBody}`;
+    return `DeepSeek ${operation} failed (HTTP ${response.status}): ${rawBody}. ${guidance}`;
   }
-  return `DeepSeek ${operation} API failed (HTTP ${response.status})`;
+  return `DeepSeek ${operation} failed (HTTP ${response.status}). ${guidance}`;
 }
 
 export interface DeepSeekRequestOptions {
@@ -91,18 +154,29 @@ async function postDeepSeekEndpoint<TResponse>(
   schema: z.ZodType<TResponse>,
   options: DeepSeekRequestOptions,
 ): Promise<TResponse> {
-  const response = await options.fetchFn(`${DEEPSEEK_API_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${options.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.any([
-      options.signal,
-      AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    ]),
-  });
+  let response: Response;
+  try {
+    response = await options.fetchFn(`${DEEPSEEK_API_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${options.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.any([
+        options.signal,
+        AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      ]),
+    });
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      throw new Error(
+        `DeepSeek ${operation} request timed out after ${REQUEST_TIMEOUT_MS / 1000}s. Safe to retry or try a different query/URL.`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     throw new Error(await formatHttpErrorMessage(operation, response));

@@ -29,3 +29,17 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 - Git hooks (`husky`) run `lint-staged` (`eslint --max-warnings 0`, `prettier --ignore-unknown --check`) on `pre-commit` and `commitlint` (`@commitlint/config-conventional`) on `commit-msg`. Commit through the hooks rather than bypassing with `--no-verify`.
 - Run `pnpm verify` before finishing changes (runs `format:check`, `lint`, `typecheck`, `build`, and `test`).
 - When changing publishable `files`, `bin`, or `exports`, also inspect `pnpm --filter <pkg> pack --pack-destination /tmp`.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues in `Soulike/mcp` via `gh` CLI (PRs as a request surface: off). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout (`GLOSSARY.md` and `docs/adr/` at the repo root, created lazily when needed). See `docs/agents/domain.md`.

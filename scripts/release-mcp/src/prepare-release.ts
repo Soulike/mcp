@@ -6,7 +6,11 @@ import semver from 'semver';
 
 const PACKAGE_DIR_PATTERN = /^servers\/[^/]+$/;
 const EXPECTED_REPO_URL_PATTERN = /github\.com\/Soulike\/mcp(?:\.git)?$/;
+const EXPECTED_PROVENANCE_URI_PATTERN = /github\.com\/Soulike\/mcp(?:@|$)/;
 const NPM_REGISTRY_BASE_URL = 'https://registry.npmjs.org';
+const NPM_ATTESTATIONS_BASE_URL =
+  'https://registry.npmjs.org/-/npm/v1/attestations';
+const SLSA_PROVENANCE_V1_TYPE = 'https://slsa.dev/provenance/v1';
 const GITHUB_RELEASES_API_BASE =
   'https://api.github.com/repos/Soulike/mcp/releases/tags';
 
@@ -119,6 +123,99 @@ async function checkPublishedOnNpm(
   }
   throw new Error(
     `Unexpected npm registry status ${response.status} checking ${packageName}@${version}.`,
+  );
+}
+
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
+
+async function fetchProvenanceGitCommit(
+  packageName: string,
+  version: string,
+  fetchFn: typeof fetch,
+): Promise<string> {
+  const encodedPkg = encodeURIComponent(packageName);
+  const response = await fetchFn(
+    `${NPM_ATTESTATIONS_BASE_URL}/${encodedPkg}@${version}`,
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch npm provenance for ${packageName}@${version} (HTTP ${response.status}); cannot verify source commit.`,
+    );
+  }
+
+  const raw: unknown = await response.json();
+  if (
+    typeof raw !== 'object' ||
+    raw === null ||
+    !('attestations' in raw) ||
+    !isUnknownArray(raw.attestations)
+  ) {
+    throw new Error(
+      `Invalid npm attestations payload for ${packageName}@${version}.`,
+    );
+  }
+
+  for (const attestation of raw.attestations) {
+    if (
+      typeof attestation !== 'object' ||
+      attestation === null ||
+      !('predicateType' in attestation) ||
+      attestation.predicateType !== SLSA_PROVENANCE_V1_TYPE ||
+      !('bundle' in attestation) ||
+      typeof attestation.bundle !== 'object' ||
+      attestation.bundle === null ||
+      !('dsseEnvelope' in attestation.bundle) ||
+      typeof attestation.bundle.dsseEnvelope !== 'object' ||
+      attestation.bundle.dsseEnvelope === null ||
+      !('payload' in attestation.bundle.dsseEnvelope) ||
+      typeof attestation.bundle.dsseEnvelope.payload !== 'string'
+    ) {
+      continue;
+    }
+
+    const decoded: unknown = JSON.parse(
+      Buffer.from(attestation.bundle.dsseEnvelope.payload, 'base64').toString(
+        'utf8',
+      ),
+    );
+    if (
+      typeof decoded !== 'object' ||
+      decoded === null ||
+      !('predicate' in decoded) ||
+      typeof decoded.predicate !== 'object' ||
+      decoded.predicate === null ||
+      !('buildDefinition' in decoded.predicate) ||
+      typeof decoded.predicate.buildDefinition !== 'object' ||
+      decoded.predicate.buildDefinition === null ||
+      !('resolvedDependencies' in decoded.predicate.buildDefinition) ||
+      !isUnknownArray(decoded.predicate.buildDefinition.resolvedDependencies)
+    ) {
+      continue;
+    }
+
+    for (const dep of decoded.predicate.buildDefinition.resolvedDependencies) {
+      if (
+        typeof dep === 'object' &&
+        dep !== null &&
+        'uri' in dep &&
+        typeof dep.uri === 'string' &&
+        EXPECTED_PROVENANCE_URI_PATTERN.test(dep.uri) &&
+        'digest' in dep &&
+        typeof dep.digest === 'object' &&
+        dep.digest !== null &&
+        'gitCommit' in dep.digest &&
+        typeof dep.digest.gitCommit === 'string' &&
+        dep.digest.gitCommit !== ''
+      ) {
+        return dep.digest.gitCommit;
+      }
+    }
+  }
+
+  throw new Error(
+    `No matching SLSA provenance gitCommit found for ${packageName}@${version}; cannot verify source commit.`,
   );
 }
 
@@ -235,17 +332,25 @@ export async function prepareRelease(
       `Cannot finalize ${manifest.name}@${manifest.version}: version is not published on npm yet.`,
     );
   }
-  if (originTagSha !== undefined) {
-    if (options.targetSha === undefined || options.targetSha === '') {
-      throw new Error(
-        `Git tag "${tag}" already exists on origin (${originTagSha}) and target SHA was not provided to verify ownership.`,
-      );
-    }
-    if (originTagSha !== options.targetSha) {
-      throw new Error(
-        `Git tag "${tag}" on origin points to ${originTagSha}, expected ${options.targetSha}.`,
-      );
-    }
+  if (options.targetSha === undefined || options.targetSha === '') {
+    throw new Error(
+      `Cannot finalize ${manifest.name}@${manifest.version}: target SHA is required to verify ownership.`,
+    );
+  }
+  const provenanceCommit = await fetchProvenanceGitCommit(
+    manifest.name,
+    manifest.version,
+    fetchFn,
+  );
+  if (provenanceCommit !== options.targetSha) {
+    throw new Error(
+      `Published ${manifest.name}@${manifest.version} provenance gitCommit (${provenanceCommit}) does not match target SHA (${options.targetSha}).`,
+    );
+  }
+  if (originTagSha !== undefined && originTagSha !== options.targetSha) {
+    throw new Error(
+      `Git tag "${tag}" on origin points to ${originTagSha}, expected ${options.targetSha}.`,
+    );
   }
 
   return {

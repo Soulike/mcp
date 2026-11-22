@@ -74,14 +74,55 @@ const VALID_MANIFEST = {
   },
 };
 
+function createProvenancePayload(gitCommit: string): string {
+  const dssePayload = Buffer.from(
+    JSON.stringify({
+      predicate: {
+        buildDefinition: {
+          resolvedDependencies: [
+            {
+              uri: 'git+https://github.com/Soulike/mcp@refs/heads/main',
+              digest: { gitCommit },
+            },
+          ],
+        },
+      },
+    }),
+    'utf8',
+  ).toString('base64');
+
+  return JSON.stringify({
+    attestations: [
+      {
+        predicateType: 'https://slsa.dev/provenance/v1',
+        bundle: {
+          dsseEnvelope: {
+            payload: dssePayload,
+          },
+        },
+      },
+    ],
+  });
+}
+
 function createStubFetch(options: {
   npmStatus: number;
   githubReleaseStatus: number;
+  provenanceStatus?: number | undefined;
+  provenanceCommit?: string | undefined;
   seenUrls?: string[] | undefined;
 }): typeof fetch {
   return (input) => {
     const url = getRequestUrl(input);
     options.seenUrls?.push(url);
+    if (url.startsWith('https://registry.npmjs.org/-/npm/v1/attestations/')) {
+      const status = options.provenanceStatus ?? 200;
+      const body =
+        status === 200 && options.provenanceCommit !== undefined
+          ? createProvenancePayload(options.provenanceCommit)
+          : '{}';
+      return Promise.resolve(new Response(body, { status }));
+    }
     if (url.startsWith('https://registry.npmjs.org/')) {
       return Promise.resolve(new Response('{}', { status: options.npmStatus }));
     }
@@ -271,7 +312,7 @@ await describe('prepareRelease', async () => {
         /not published on npm yet/,
       );
 
-      // npm-present + GitHub-release-absent + no tag -> skipNpmPublish: true.
+      // npm-present + GitHub-release-absent + matching provenance + no tag -> skipNpmPublish: true.
       const resumeNoTag = await prepareRelease({
         repoDir,
         packageDir: 'servers/alpha-mcp',
@@ -280,6 +321,7 @@ await describe('prepareRelease', async () => {
         fetchFn: createStubFetch({
           npmStatus: 200,
           githubReleaseStatus: 404,
+          provenanceCommit: firstSha,
         }),
       });
       assert.deepEqual(resumeNoTag, {
@@ -289,6 +331,42 @@ await describe('prepareRelease', async () => {
         skipNpmPublish: true,
         tagExistsOnOrigin: false,
       });
+
+      // No-tag case where published provenance belongs to firstSha (A) and target is secondSha (B) -> rejected.
+      await writeFile(join(repoDir, 'README.md'), '# advance\n');
+      const secondSha = commitAndPushMain(repoDir, 'advance');
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            targetSha: secondSha,
+            finalizeExisting: true,
+            fetchFn: createStubFetch({
+              npmStatus: 200,
+              githubReleaseStatus: 404,
+              provenanceCommit: firstSha,
+            }),
+          }),
+        /provenance gitCommit .* does not match target SHA/,
+      );
+
+      // Missing provenance is rejected even when no tag exists.
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            targetSha: firstSha,
+            finalizeExisting: true,
+            fetchFn: createStubFetch({
+              npmStatus: 200,
+              githubReleaseStatus: 404,
+              provenanceStatus: 404,
+            }),
+          }),
+        /Failed to fetch npm provenance/,
+      );
 
       // Tag already exists on firstSha while release is still absent -> succeeds.
       git(repoDir, ['tag', 'alpha-mcp@0.1.0', firstSha]);
@@ -302,6 +380,7 @@ await describe('prepareRelease', async () => {
         fetchFn: createStubFetch({
           npmStatus: 200,
           githubReleaseStatus: 404,
+          provenanceCommit: firstSha,
         }),
       });
       assert.deepEqual(resumeWithMatchingTag, {
@@ -313,8 +392,6 @@ await describe('prepareRelease', async () => {
       });
 
       // Tag pointing to a different commit is rejected.
-      await writeFile(join(repoDir, 'README.md'), '# advance\n');
-      const secondSha = commitAndPushMain(repoDir, 'advance');
       await assert.rejects(
         () =>
           prepareRelease({
@@ -325,6 +402,7 @@ await describe('prepareRelease', async () => {
             fetchFn: createStubFetch({
               npmStatus: 200,
               githubReleaseStatus: 404,
+              provenanceCommit: secondSha,
             }),
           }),
         /points to .*, expected/,

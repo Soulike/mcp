@@ -51,7 +51,7 @@ function formatDeepSeekApiError(error: DeepSeekApiError): string {
 
   switch (error.kind) {
     case 'timeout':
-      return `DeepSeek ${label} request timed out after 60s. Safe to retry or try a different query/URL.`;
+      return `${error.message}. Safe to retry or try a different query/URL.`;
     case 'invalid_response':
       return `${error.message}. Retry briefly or inspect the upstream response.`;
     case 'http': {

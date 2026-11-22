@@ -64,6 +64,7 @@ export interface DeepSeekWebClient {
 export interface DeepSeekWebClientOptions {
   apiKey: string;
   fetchFn?: typeof fetch | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export type DeepSeekOperation = 'search' | 'fetch';
@@ -109,18 +110,20 @@ function isTimeoutError(error: unknown): boolean {
 
 function createTimeoutError(
   operation: DeepSeekOperation,
+  timeoutMs: number,
   cause: unknown,
 ): DeepSeekApiError {
   return new DeepSeekApiError({
     operation,
     kind: 'timeout',
-    message: `DeepSeek ${operation} request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
+    message: `DeepSeek ${operation} request timed out after ${timeoutMs / 1000}s`,
     cause,
   });
 }
 
 async function parseHttpError(
   operation: DeepSeekOperation,
+  timeoutMs: number,
   response: Response,
 ): Promise<DeepSeekApiError> {
   let rawBody: string;
@@ -128,7 +131,7 @@ async function parseHttpError(
     rawBody = (await response.text()).trim();
   } catch (error: unknown) {
     if (isTimeoutError(error)) {
-      return createTimeoutError(operation, error);
+      return createTimeoutError(operation, timeoutMs, error);
     }
     throw error;
   }
@@ -176,6 +179,7 @@ export function createDeepSeekWebClient(
   options: DeepSeekWebClientOptions,
 ): DeepSeekWebClient {
   const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
   async function post<TResponse>(
     operation: DeepSeekOperation,
@@ -193,20 +197,17 @@ export function createDeepSeekWebClient(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.any([
-          signal,
-          AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        ]),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       });
     } catch (error: unknown) {
       if (isTimeoutError(error)) {
-        throw createTimeoutError(operation, error);
+        throw createTimeoutError(operation, timeoutMs, error);
       }
       throw error;
     }
 
     if (!response.ok) {
-      throw await parseHttpError(operation, response);
+      throw await parseHttpError(operation, timeoutMs, response);
     }
 
     let rawJson: unknown;
@@ -214,7 +215,7 @@ export function createDeepSeekWebClient(
       rawJson = await response.json();
     } catch (error: unknown) {
       if (isTimeoutError(error)) {
-        throw createTimeoutError(operation, error);
+        throw createTimeoutError(operation, timeoutMs, error);
       }
       throw new DeepSeekApiError({
         operation,

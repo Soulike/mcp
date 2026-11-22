@@ -27,14 +27,22 @@ function getFirstTextContent(result: unknown): string {
 
 async function withClient(
   options:
-    | { apiKey?: string | undefined; fetch?: typeof fetch | undefined }
+    | {
+        apiKey?: string | undefined;
+        fetch?: typeof fetch | undefined;
+        timeoutMs?: number | undefined;
+      }
     | undefined,
   run: (client: Client) => Promise<void>,
 ): Promise<void> {
   const apiKey = options?.apiKey;
   const deepSeekClient =
     apiKey !== undefined && apiKey.trim() !== ''
-      ? createDeepSeekWebClient({ apiKey, fetchFn: options?.fetch })
+      ? createDeepSeekWebClient({
+          apiKey,
+          fetchFn: options?.fetch,
+          timeoutMs: options?.timeoutMs,
+        })
       : undefined;
   const server = createServer({ client: deepSeekClient });
   const client = new Client({
@@ -552,6 +560,44 @@ await describe('deepseek-web-mcp server', async () => {
         assert.equal(result.isError, true);
         assert.equal(result.structuredContent, undefined);
         assert.match(getFirstTextContent(result), /timed out after 60s/i);
+      },
+    );
+  });
+
+  await it('enforces request deadline timeout when a response body stalls', async () => {
+    let observedDeadlineAbort = false;
+    const stubFetch: typeof fetch = (_input, init) => {
+      const signal = init?.signal;
+      assert.ok(signal);
+      const response = new Response(
+        new ReadableStream({
+          start(controller) {
+            signal.addEventListener(
+              'abort',
+              () => {
+                observedDeadlineAbort = true;
+                controller.error(signal.reason);
+              },
+              { once: true },
+            );
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+      return Promise.resolve(response);
+    };
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch, timeoutMs: 25 },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/stalled-body' },
+        });
+        assert.equal(observedDeadlineAbort, true);
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent, undefined);
+        assert.match(getFirstTextContent(result), /timed out/i);
       },
     );
   });

@@ -27,10 +27,5 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 - To create a new MCP server, copy `servers/template-mcp`, set `"name": "@soulike/<name>-mcp"` and its `bin` entry (removing `"private": true` when ready to publish), add its user guide at `servers/<name>-mcp/README.md`, and list it in the root `README.md`.
 - Git hooks (`husky`) run `lint-staged` (`eslint --max-warnings 0`, `prettier --ignore-unknown --check`) on `pre-commit` and `commitlint` (`@commitlint/config-conventional`) on `commit-msg`. Commit through the hooks rather than bypassing with `--no-verify`.
-- Run before finishing changes:
-  - `pnpm format:check`
-  - `pnpm lint`
-  - `pnpm typecheck`
-  - `pnpm build`
-  - `pnpm test`
+- Run `pnpm verify` before finishing changes (runs `format:check`, `lint`, `typecheck`, `build`, and `test`).
 - When changing publishable `files`, `bin`, or `exports`, also inspect `pnpm --filter <pkg> pack --pack-destination /tmp`.

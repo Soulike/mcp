@@ -11,7 +11,7 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 ## Toolchain and Dependency Policies
 
-- Use `pnpm` exclusively (`devEngines.packageManager` pins `pnpm@12.21.0`; `npm` and `yarn` will fail).
+- Use `pnpm` exclusively (`devEngines.packageManager` requires `pnpm@^12.0.0`; `npm` and `yarn` will fail).
 - Support the previous and current Node.js LTS release lines (currently Node 24 and 26). When the two-LTS window advances, update `engines.node` in package manifests, `@types/node` in `pnpm-workspace.yaml` `catalog:`, `target`/`lib` in `configs/tsconfig/node.json` to match the older supported LTS, the `matrix.node-version` list in `.github/workflows/ci.yml`, and the minimum Node version in `README.md`.
 - Manage shared dependency versions in `pnpm-workspace.yaml` under `catalog:` and reference `"catalog:"` in workspace manifests.
 - `minimumReleaseAge: 10080` (7 days) is enforced in `pnpm-workspace.yaml`. When adding or upgrading dependencies, select versions published at least 7 days ago rather than relaxing the policy unless explicitly approved.

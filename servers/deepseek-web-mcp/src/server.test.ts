@@ -398,7 +398,7 @@ await describe('deepseek-web-mcp server', async () => {
   });
 
   await it('truncates oversized fetch output and structuredContent with a notice without splitting surrogate pairs', async () => {
-    const body = `${'a'.repeat(19_800)}${'🚀'.repeat(200)}`;
+    const body = `${'a'.repeat(19_802)}${'🚀'.repeat(200)}`;
     const stubFetch: typeof fetch = () =>
       Promise.resolve(
         new Response(
@@ -440,7 +440,7 @@ await describe('deepseek-web-mcp server', async () => {
         assert.ok(result.structuredContent.content.length <= 20_000);
         assert.match(result.structuredContent.content, /\[Output truncated:/);
         assert.equal(result.structuredContent.content.isWellFormed(), true);
-        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
+        assert.equal(JSON.stringify(result.structuredContent).length, 19_999);
       },
     );
   });

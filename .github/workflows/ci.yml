@@ -22,11 +22,7 @@ jobs:
           runtime: node@${{ matrix.node-version }}
           cache: true
           require-lockfile: true
-      - run: pnpm format:check
-      - run: pnpm lint
-      - run: pnpm typecheck
-      - run: pnpm build
-      - run: pnpm test
+      - run: pnpm verify
 
   ci_gate:
     name: CI gate

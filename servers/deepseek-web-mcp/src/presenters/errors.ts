@@ -4,6 +4,7 @@ import {
   type DeepSeekOperation,
   type DeepSeekWebClient,
 } from '../services/deepseek-client.ts';
+import { MAX_TOOL_OUTPUT_CHARS, sliceUtf16Safe } from './output-limit.ts';
 
 function operationLabel(operation: DeepSeekOperation): string {
   return operation === 'search' ? 'Search' : 'Fetch';
@@ -46,14 +47,27 @@ function getHttpGuidance(
   }
 }
 
+function capErrorText(text: string): string {
+  if (text.length <= MAX_TOOL_OUTPUT_CHARS) {
+    return text;
+  }
+  const notice = `\n\n[Error output truncated: exceeded the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit.]`;
+  const maxBodyChars = Math.max(0, MAX_TOOL_OUTPUT_CHARS - notice.length);
+  return `${sliceUtf16Safe(text, maxBodyChars)}${notice}`;
+}
+
 function formatDeepSeekApiError(error: DeepSeekApiError): string {
   const label = operationLabel(error.operation);
 
   switch (error.kind) {
     case 'timeout':
-      return `${error.message}. Safe to retry or try a different query/URL.`;
+      return capErrorText(
+        `${error.message}. Safe to retry or try a different query/URL.`,
+      );
     case 'invalid_response':
-      return `${error.message}. Retry briefly or inspect the upstream response.`;
+      return capErrorText(
+        `${error.message}. Retry briefly or inspect the upstream response.`,
+      );
     case 'http': {
       const guidance = getHttpGuidance(error.operation, error.status);
       const tags = [error.code, error.errorType].filter(
@@ -62,11 +76,32 @@ function formatDeepSeekApiError(error: DeepSeekApiError): string {
       const tagSuffix = tags.length > 0 ? ` [${tags.join(' / ')}]` : '';
       const statusPart =
         error.status !== undefined ? `HTTP ${error.status}` : 'HTTP error';
-      const detailPart =
-        error.upstreamMessage !== undefined && error.upstreamMessage !== ''
-          ? `: ${error.upstreamMessage}`
-          : '';
-      return `DeepSeek ${label} failed (${statusPart}${tagSuffix})${detailPart}. ${guidance}`;
+      const prefix = `DeepSeek ${label} failed (${statusPart}${tagSuffix})`;
+      const suffix = `. ${guidance}`;
+
+      if (error.upstreamMessage === undefined || error.upstreamMessage === '') {
+        return capErrorText(`${prefix}${suffix}`);
+      }
+
+      const full = `${prefix}: ${error.upstreamMessage}${suffix}`;
+      if (full.length <= MAX_TOOL_OUTPUT_CHARS) {
+        return full;
+      }
+
+      const detailNotice = '... [upstream error detail truncated]';
+      const maxDetailChars = Math.max(
+        0,
+        MAX_TOOL_OUTPUT_CHARS -
+          prefix.length -
+          2 -
+          detailNotice.length -
+          suffix.length,
+      );
+      const slicedDetail = sliceUtf16Safe(
+        error.upstreamMessage,
+        maxDetailChars,
+      );
+      return capErrorText(`${prefix}: ${slicedDetail}${detailNotice}${suffix}`);
     }
   }
 }
@@ -100,7 +135,7 @@ function createToolErrorResult(
     content: [
       {
         type: 'text',
-        text: `DeepSeek ${label} failed: ${detail}`,
+        text: capErrorText(`DeepSeek ${label} failed: ${detail}`),
       },
     ],
     isError: true,

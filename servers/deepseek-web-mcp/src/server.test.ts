@@ -743,6 +743,51 @@ await describe('deepseek-web-mcp server', async () => {
     );
   });
 
+  await it('caps oversized upstream HTTP error bodies at 20,000 characters while preserving status and guidance for both tools', async () => {
+    const oversizedBody = `${'e'.repeat(29_999)}🚀`;
+    const responseQueue: Response[] = [
+      new Response(oversizedBody, { status: 502 }),
+      new Response(oversizedBody, { status: 504 }),
+    ];
+
+    const stubFetch: typeof fetch = () => {
+      const next = responseQueue.shift();
+      assert.ok(next);
+      return Promise.resolve(next);
+    };
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const searchError = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'oversized search error' },
+        });
+        assert.equal(searchError.isError, true);
+        assert.equal(searchError.structuredContent, undefined);
+        const searchErrorText = getFirstTextContent(searchError);
+        assert.ok(searchErrorText.length <= 20_000);
+        assert.equal(searchErrorText.isWellFormed(), true);
+        assert.match(searchErrorText, /DeepSeek Search failed \(HTTP 502\)/);
+        assert.match(searchErrorText, /\[upstream error detail truncated\]/);
+        assert.match(searchErrorText, /safe to retry after a brief pause/i);
+
+        const fetchError = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/oversized-error' },
+        });
+        assert.equal(fetchError.isError, true);
+        assert.equal(fetchError.structuredContent, undefined);
+        const fetchErrorText = getFirstTextContent(fetchError);
+        assert.ok(fetchErrorText.length <= 20_000);
+        assert.equal(fetchErrorText.isWellFormed(), true);
+        assert.match(fetchErrorText, /DeepSeek Fetch failed \(HTTP 504\)/);
+        assert.match(fetchErrorText, /\[upstream error detail truncated\]/);
+        assert.match(fetchErrorText, /safe to retry after a brief pause/i);
+      },
+    );
+  });
+
   await it('maps malformed upstream 200 payloads to tool errors', async () => {
     const stubFetch: typeof fetch = () =>
       Promise.resolve(

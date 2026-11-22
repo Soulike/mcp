@@ -4,11 +4,11 @@ A monorepo of Model Context Protocol (MCP) servers for Node.js (`>=24`), designe
 
 ## Servers
 
-No public MCP servers have been published from this repository yet. Each server lives under `servers/<name>-mcp` with its own usage documentation at `servers/<name>-mcp/README.md`.
+Each server lives under `servers/<name>-mcp` with its own usage documentation at `servers/<name>-mcp/README.md`.
 
-| Server        | Package               | Description                          | Documentation                  |
-| ------------- | --------------------- | ------------------------------------ | ------------------------------ |
-| _Coming soon_ | `@soulike/<name>-mcp` | Placeholder for upcoming MCP servers | `servers/<name>-mcp/README.md` |
+| Server             | Package                     | Description                                  | Documentation                                                                |
+| ------------------ | --------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------- |
+| `deepseek-web-mcp` | `@soulike/deepseek-web-mcp` | DeepSeek web search and web page fetch tools | [`servers/deepseek-web-mcp/README.md`](./servers/deepseek-web-mcp/README.md) |
 
 ## Usage
 
@@ -29,7 +29,7 @@ See each server's `servers/<name>-mcp/README.md` for available tools, arguments,
 
 ## Development
 
-Requires Node.js `>=24` and `pnpm`. After cloning, install dependencies with `pnpm install` and run `pnpm verify`. See [`AGENTS.md`](./AGENTS.md) and [`servers/template-mcp`](./servers/template-mcp) for workspace conventions.
+Requires Node.js `>=24` and `pnpm`. After cloning, install dependencies with `pnpm install` and run `pnpm verify`. See [`AGENTS.md`](./AGENTS.md) for workspace conventions.
 
 ## License
 

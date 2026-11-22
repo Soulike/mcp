@@ -17,25 +17,55 @@ jobs:
         node-version: ['24', '26']
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/setup@v3
+      - uses: pnpm/action-setup@v5
         with:
-          runtime: node@${{ matrix.node-version }}
-          cache: true
-          require-lockfile: true
+          version: '^12.0.0'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm verify
+
+  version_check:
+    name: Version check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v5
+        with:
+          version: '^12.0.0'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: pnpm install --filter @repo/check-server-versions --frozen-lockfile
+      - name: Verify MCP server versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.event.after }}
+        run: node scripts/check-server-versions/src/check-server-versions.ts --github-actions
 
   ci_gate:
     name: CI gate
     if: always()
-    needs: [verify]
+    needs: [verify, version_check]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Require completed Verify matrix
+      - name: Require completed CI checks
         env:
           VERIFY_RESULT: ${{ needs.verify.result }}
+          VERSION_CHECK_RESULT: ${{ needs.version_check.result }}
         run: |
-          if [ "$VERIFY_RESULT" != success ]; then
-            printf 'Verify did not succeed (%s).\n' "${VERIFY_RESULT:-missing}" >&2
+          if [ "$VERIFY_RESULT" != success ] || [ "$VERSION_CHECK_RESULT" != success ]; then
+            printf 'CI failed (verify=%s, version_check=%s).\n' "${VERIFY_RESULT:-missing}" "${VERSION_CHECK_RESULT:-missing}" >&2
             exit 1
           fi

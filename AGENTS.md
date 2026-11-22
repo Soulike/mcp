@@ -4,14 +4,15 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 ## Repository Boundaries
 
-- `servers/*`: Individual MCP servers. Publishable servers are named `@soulike/<name>-mcp` with a `bin` entry for `npx`. `servers/template-mcp` is `"private": true` and serves as the reference starter and verification package.
+- `servers/*`: Individual MCP servers. Publishable servers are named `@soulike/<name>-mcp` with a `bin` entry for `npx`.
 - `packages/*`: Internal shared packages (`@repo/*`, `"private": true`).
-- `configs/tsconfig`: `@repo/tsconfig` (`"private": true`), exporting `@repo/tsconfig/node.json`. Extend `@repo/tsconfig/node.json` in workspace `tsconfig.json` files instead of using relative `../../` paths.
+- `configs/tsconfig`: `@repo/tsconfig` (`"private": true`), exporting `@repo/tsconfig/node.json` (base Node config for libraries and scripts) and `@repo/tsconfig/mcp-server.json` (extends `node.json` with `declaration`, `declarationMap`, and `sourceMap` disabled for CLI MCP server packages). Extend `@repo/tsconfig/*` in workspace `tsconfig.json` files instead of using relative `../../` paths.
+- `scripts/*`: Internal repository automation and CI scripts (`@repo/*`, `"private": true`).
 - Root owns `eslint.config.mjs`, `pnpm-workspace.yaml`, `.prettierignore`, and root `package.json` (`prettier`, `commitlint`, `lint-staged`). Keep workspace packages free of local `eslint.config.*` files so the root flat config remains the single final layer.
 
 ## Toolchain and Dependency Policies
 
-- Use `pnpm` exclusively (`devEngines.packageManager` requires `pnpm@^12.0.0`; `npm` and `yarn` will fail).
+- Use `pnpm` (`^12.0.0`) for installing dependencies and running workspace scripts; do not generate `package-lock.json` or `yarn.lock`.
 - Support the previous and current Node.js LTS release lines (currently Node 24 and 26). When the two-LTS window advances, update `engines.node` in package manifests, `@types/node` in `pnpm-workspace.yaml` `catalog:`, `target`/`lib` in `configs/tsconfig/node.json` to match the older supported LTS, the `matrix.node-version` list in `.github/workflows/ci.yml`, and the minimum Node version in `README.md`.
 - Manage shared dependency versions in `pnpm-workspace.yaml` under `catalog:` and reference `"catalog:"` in workspace manifests.
 - `minimumReleaseAge: 10080` (7 days) is enforced in `pnpm-workspace.yaml`. When adding or upgrading dependencies, select versions published at least 7 days ago rather than relaxing the policy unless explicitly approved.
@@ -25,7 +26,13 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 ## Scaffolding and Verification
 
-- To create a new MCP server, copy `servers/template-mcp`, set `"name": "@soulike/<name>-mcp"` and its `bin` entry (removing `"private": true` when ready to publish), add its user guide at `servers/<name>-mcp/README.md`, and list it in the root `README.md`.
+- To create a new MCP server under `servers/<name>-mcp`, follow an existing server layout (such as `servers/deepseek-web-mcp`), set `"name": "@soulike/<name>-mcp"`, its `bin` entry, `"repository"` (`https://github.com/Soulike/mcp.git` + `"directory": "servers/<name>-mcp"`), and initial Semver `"version"` in `package.json`, add its user guide at `servers/<name>-mcp/README.md`, list it in the root `README.md`, and add `.github/workflows/release-<name>-mcp.yml` calling `./.github/workflows/release-mcp.yml`.
+- **Releasing to npm (OIDC Trusted Publishing)**: Trigger `.github/workflows/release-<name>-mcp.yml` via `workflow_dispatch` on `main` (which runs `pnpm verify`, packs the tarball, publishes with npm OIDC + automatic provenance, and creates a `<name>-mcp@<version>` tag + GitHub Release in a separate finalization job). If npm publishing succeeds but GitHub Release creation fails, either rerun failed jobs or re-dispatch with `finalize_existing: true` to complete the release without re-publishing. Because npm requires a package to exist before configuring Trusted Publishing, publish a `0.0.0` placeholder manually first (leaving the initial `0.1.0` version in `package.json` free for the first OIDC run), or—if the initial real version was published manually—commit a bumped Semver `version` in `package.json` before triggering the first OIDC release within 48 hours of configuring the Trusted Publisher on npmjs.com (workflow filename `release-<name>-mcp.yml`, `npm publish` allowed).
+- **Single source of truth for version**: Each MCP server's `package.json` `version` is its sole version source. Read it at runtime via `readFileSync(new URL('../package.json', import.meta.url), 'utf8')` rather than duplicating version constants in `src/`.
+- **Semver bump policy**: Whenever modifying non-test files (`src/` excluding `src/**/*.test.ts`, `package.json`, `README.md`, or build configs) in a publishable (`"private"` omitted / not `true`) `servers/<name>-mcp` package, bump its `package.json` `version` according to Semver:
+  - Under `0.x`: bump `patch` (`0.1.0 -> 0.1.1`) for bug fixes, docs, or backwards-compatible adjustments; bump `minor` (`0.1.0 -> 0.2.0`) for new features or breaking changes.
+  - Under `>=1.0.0`: bump `patch` for backwards-compatible fixes/docs, `minor` for backwards-compatible additions (new tools or optional fields), and `major` for breaking changes (renamed/removed tools, new required inputs, or breaking output changes).
+  - CI enforces strict Semver progression on publishable `servers/*` packages via `version_check` in `.github/workflows/ci.yml` (`scripts/check-server-versions`).
 - Git hooks (`husky`) run `lint-staged` (`eslint --max-warnings 0`, `prettier --ignore-unknown --check`) on `pre-commit` and `commitlint` (`@commitlint/config-conventional`) on `commit-msg`. Commit through the hooks rather than bypassing with `--no-verify`.
 - Run `pnpm verify` before finishing changes (runs `format:check`, `lint`, `typecheck`, `build`, and `test`).
 - When changing publishable `files`, `bin`, or `exports`, also inspect `pnpm --filter <pkg> pack --pack-destination /tmp`.

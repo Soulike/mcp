@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "MCP server for DeepSeek web search and fetch APIs",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Soulike/mcp.git",
+    "directory": "servers/deepseek-web-mcp"
+  },
   "type": "module",
   "engines": {
     "node": ">=24"

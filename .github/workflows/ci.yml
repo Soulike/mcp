@@ -5,8 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+permissions: {}
+
 jobs:
   verify:
+    name: Verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -14,14 +17,29 @@ jobs:
         node-version: ['24', '26']
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v5
-      - uses: actions/setup-node@v6
+      - uses: pnpm/setup@v3
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
+          runtime: node@${{ matrix.node-version }}
+          cache: true
+          require-lockfile: true
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+
+  ci_gate:
+    name: CI gate
+    if: always()
+    needs: [verify]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require completed Verify matrix
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          if [ "$VERIFY_RESULT" != success ]; then
+            printf 'Verify did not succeed (%s).\n' "${VERIFY_RESULT:-missing}" >&2
+            exit 1
+          fi

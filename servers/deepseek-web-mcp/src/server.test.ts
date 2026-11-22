@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -67,10 +68,21 @@ async function withClient(
 
 await describe('deepseek-web-mcp server', async () => {
   await it('lists deepseek_search and deepseek_fetch with read-only open-world annotations', async () => {
+    const manifest: unknown = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    );
+    assert.ok(
+      typeof manifest === 'object' &&
+        manifest !== null &&
+        'version' in manifest &&
+        typeof manifest.version === 'string',
+    );
+    const expectedVersion = manifest.version;
+
     await withClient(undefined, async (client) => {
       assert.deepEqual(client.getServerVersion(), {
         name: 'deepseek-web-mcp',
-        version: '0.1.0',
+        version: expectedVersion,
       });
       const { tools } = await client.listTools();
       assert.deepEqual(

@@ -160,7 +160,44 @@ export function checkServerVersions(options: {
   return { checkedPackages };
 }
 
-function parseCliArgs(argv: readonly string[]): {
+export function resolveGitHubActionsRevisions(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+): { baseRev: string; headRev: string } {
+  const eventName = env['EVENT_NAME'] ?? env['GITHUB_EVENT_NAME'];
+  if (eventName === 'pull_request') {
+    const baseRef = env['BASE_REF'] ?? env['GITHUB_BASE_REF'];
+    const prHeadSha = env['PR_HEAD_SHA'];
+    if (
+      baseRef === undefined ||
+      baseRef === '' ||
+      prHeadSha === undefined ||
+      prHeadSha === ''
+    ) {
+      throw new Error(
+        'Missing BASE_REF or PR_HEAD_SHA for pull_request version check.',
+      );
+    }
+    const headRev = prHeadSha;
+    const baseRev = runGit(repoDir, [
+      'merge-base',
+      `origin/${baseRef}`,
+      headRev,
+    ]).trim();
+    return { baseRev, headRev };
+  }
+
+  const headRev = runGit(repoDir, ['rev-parse', 'HEAD']).trim();
+  const baseRev = gitObjectExists(repoDir, 'HEAD~1')
+    ? runGit(repoDir, ['rev-parse', 'HEAD~1']).trim()
+    : runGit(repoDir, ['hash-object', '-t', 'tree', '/dev/null']).trim();
+  return { baseRev, headRev };
+}
+
+function parseCliArgs(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+): {
   repoDir: string;
   baseRev: string;
   headRev: string;
@@ -168,6 +205,7 @@ function parseCliArgs(argv: readonly string[]): {
   let repoDir = process.cwd();
   let baseRev: string | undefined;
   let headRev: string | undefined;
+  let useGitHubActions = false;
 
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
@@ -181,14 +219,23 @@ function parseCliArgs(argv: readonly string[]): {
     } else if (arg === '--repo' && next !== undefined) {
       repoDir = next;
       index++;
+    } else if (arg === '--github-actions') {
+      useGitHubActions = true;
     } else {
       throw new Error(`Unknown or incomplete argument: ${arg}`);
     }
   }
 
+  if (useGitHubActions) {
+    return {
+      repoDir,
+      ...resolveGitHubActionsRevisions(repoDir, env),
+    };
+  }
+
   if (baseRev === undefined || headRev === undefined) {
     throw new Error(
-      'Usage: node scripts/check-server-versions/src/check-server-versions.ts --base <rev> --head <rev> [--repo <dir>]',
+      'Usage: node scripts/check-server-versions/src/check-server-versions.ts (--github-actions | --base <rev> --head <rev>) [--repo <dir>]',
     );
   }
 
@@ -208,7 +255,7 @@ function isEntryPoint(moduleUrl: string, argv1: string | undefined): boolean {
 
 if (isEntryPoint(import.meta.url, process.argv[1])) {
   try {
-    const args = parseCliArgs(process.argv.slice(2));
+    const args = parseCliArgs(process.argv.slice(2), process.env);
     const result = checkServerVersions(args);
     if (result.checkedPackages.length === 0) {
       console.log('Version check passed: no publishable MCP servers changed.');

@@ -1,0 +1,24 @@
+{
+  "name": "@repo/release-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Release validation and metadata preparation script for MCP servers",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "semver": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/semver": "catalog:",
+    "typescript": "catalog:"
+  }
+}

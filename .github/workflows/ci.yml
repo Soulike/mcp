@@ -44,19 +44,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            HEAD_SHA="$PR_HEAD_SHA"
-            BASE_SHA="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")"
-          else
-            HEAD_SHA="$(git rev-parse HEAD)"
-            if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-              BASE_SHA="$(git rev-parse HEAD~1)"
-            else
-              BASE_SHA="$(git hash-object -t tree /dev/null)"
-            fi
-          fi
-          node scripts/check-server-versions/src/check-server-versions.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: node scripts/check-server-versions/src/check-server-versions.ts --github-actions
 
   ci_gate:
     name: CI gate

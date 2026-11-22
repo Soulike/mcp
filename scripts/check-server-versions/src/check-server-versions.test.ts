@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import {
   checkServerVersions,
   getTriggeredServerPackage,
+  resolveGitHubActionsRevisions,
 } from './check-server-versions.ts';
 
 function git(repoDir: string, args: readonly string[]): string {
@@ -242,8 +243,17 @@ await describe('checkServerVersions against Git revisions', async () => {
         'export const beta = true;\n',
       );
       const movedMain = commitAll(repoDir, 'advance main on beta');
+      git(repoDir, ['update-ref', 'refs/remotes/origin/main', movedMain]);
 
       const mergeBase = git(repoDir, ['merge-base', movedMain, prHead]);
+      assert.deepEqual(
+        resolveGitHubActionsRevisions(repoDir, {
+          EVENT_NAME: 'pull_request',
+          BASE_REF: 'main',
+          PR_HEAD_SHA: prHead,
+        }),
+        { baseRev: mergeBase, headRev: prHead },
+      );
       assert.deepEqual(
         checkServerVersions({ repoDir, baseRev: mergeBase, headRev: prHead }),
         { checkedPackages: ['alpha-mcp'] },

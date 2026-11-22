@@ -2,6 +2,7 @@ packages:
   - 'servers/*'
   - 'packages/*'
   - 'configs/*'
+  - 'scripts/*'
 
 minimumReleaseAge: 10080
 

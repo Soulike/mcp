@@ -29,7 +29,7 @@ See each server's `servers/<name>-mcp/README.md` for available tools, arguments,
 
 ## Development
 
-Requires Node.js `>=24` and `pnpm`. After cloning, install dependencies with `pnpm install` and run `pnpm verify`. See [`AGENTS.md`](./AGENTS.md) and [`servers/template-mcp`](./servers/template-mcp) for workspace conventions.
+Requires Node.js `>=24` and `pnpm`. After cloning, install dependencies with `pnpm install` and run `pnpm verify`. See [`AGENTS.md`](./AGENTS.md) for workspace conventions.
 
 ## License
 

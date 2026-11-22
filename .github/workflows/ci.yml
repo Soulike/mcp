@@ -24,18 +24,52 @@ jobs:
           require-lockfile: true
       - run: pnpm verify
 
+  version_check:
+    name: Version check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/setup@v3
+        with:
+          runtime: node@24
+          install: false
+          save-cache: false
+      - name: Verify MCP server versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            HEAD_SHA="$PR_HEAD_SHA"
+            BASE_SHA="$(git merge-base "origin/$BASE_REF" "$HEAD_SHA")"
+          else
+            HEAD_SHA="$(git rev-parse HEAD)"
+            if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+              BASE_SHA="$(git rev-parse HEAD~1)"
+            else
+              BASE_SHA="$(git hash-object -t tree /dev/null)"
+            fi
+          fi
+          node scripts/check-server-versions/src/check-server-versions.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+
   ci_gate:
     name: CI gate
     if: always()
-    needs: [verify]
+    needs: [verify, version_check]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: Require completed Verify matrix
+      - name: Require completed CI checks
         env:
           VERIFY_RESULT: ${{ needs.verify.result }}
+          VERSION_CHECK_RESULT: ${{ needs.version_check.result }}
         run: |
-          if [ "$VERIFY_RESULT" != success ]; then
-            printf 'Verify did not succeed (%s).\n' "${VERIFY_RESULT:-missing}" >&2
+          if [ "$VERIFY_RESULT" != success ] || [ "$VERSION_CHECK_RESULT" != success ]; then
+            printf 'CI failed (verify=%s, version_check=%s).\n' "${VERIFY_RESULT:-missing}" "${VERSION_CHECK_RESULT:-missing}" >&2
             exit 1
           fi

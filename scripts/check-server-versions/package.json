@@ -1,27 +1,16 @@
 {
-  "name": "@soulike/template-mcp",
+  "name": "@repo/check-server-versions",
   "version": "0.0.0",
   "private": true,
-  "description": "Minimal MCP server template for monorepo verification",
+  "description": "Internal repository automation and CI scripts",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24"
   },
-  "bin": {
-    "template-mcp": "./dist/index.js"
-  },
-  "files": [
-    "dist"
-  ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\""
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "catalog:",
-    "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/tsconfig": "workspace:*",

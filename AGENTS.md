@@ -4,9 +4,10 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 ## Repository Boundaries
 
-- `servers/*`: Individual MCP servers. Publishable servers are named `@soulike/<name>-mcp` with a `bin` entry for `npx`. `servers/template-mcp` is `"private": true` and serves as the reference starter and verification package.
+- `servers/*`: Individual MCP servers. Publishable servers are named `@soulike/<name>-mcp` with a `bin` entry for `npx`.
 - `packages/*`: Internal shared packages (`@repo/*`, `"private": true`).
 - `configs/tsconfig`: `@repo/tsconfig` (`"private": true`), exporting `@repo/tsconfig/node.json`. Extend `@repo/tsconfig/node.json` in workspace `tsconfig.json` files instead of using relative `../../` paths.
+- `scripts/*`: Internal repository automation and CI scripts (`@repo/*`, `"private": true`).
 - Root owns `eslint.config.mjs`, `pnpm-workspace.yaml`, `.prettierignore`, and root `package.json` (`prettier`, `commitlint`, `lint-staged`). Keep workspace packages free of local `eslint.config.*` files so the root flat config remains the single final layer.
 
 ## Toolchain and Dependency Policies
@@ -25,7 +26,12 @@ Monorepo for publishable Model Context Protocol (MCP) servers (`@soulike/*-mcp`)
 
 ## Scaffolding and Verification
 
-- To create a new MCP server, copy `servers/template-mcp`, set `"name": "@soulike/<name>-mcp"` and its `bin` entry (removing `"private": true` when ready to publish), add its user guide at `servers/<name>-mcp/README.md`, and list it in the root `README.md`.
+- To create a new MCP server under `servers/<name>-mcp`, follow an existing server layout (such as `servers/deepseek-web-mcp`), set `"name": "@soulike/<name>-mcp"`, its `bin` entry, and initial Semver `"version"` in `package.json`, add its user guide at `servers/<name>-mcp/README.md`, and list it in the root `README.md`.
+- **Single source of truth for version**: Each MCP server's `package.json` `version` is its sole version source. Read it at runtime via `readFileSync(new URL('../package.json', import.meta.url), 'utf8')` rather than duplicating version constants in `src/`.
+- **Semver bump policy**: Whenever modifying non-test files (`src/` excluding `src/**/*.test.ts`, `package.json`, `README.md`, or build configs) in a publishable (`"private"` omitted / not `true`) `servers/<name>-mcp` package, bump its `package.json` `version` according to Semver:
+  - Under `0.x`: bump `patch` (`0.1.0 -> 0.1.1`) for bug fixes, docs, or backwards-compatible adjustments; bump `minor` (`0.1.0 -> 0.2.0`) for new features or breaking changes.
+  - Under `>=1.0.0`: bump `patch` for backwards-compatible fixes/docs, `minor` for backwards-compatible additions (new tools or optional fields), and `major` for breaking changes (renamed/removed tools, new required inputs, or breaking output changes).
+  - CI enforces strict Semver progression on publishable `servers/*` packages via `version_check` in `.github/workflows/ci.yml` (`scripts/check-server-versions`).
 - Git hooks (`husky`) run `lint-staged` (`eslint --max-warnings 0`, `prettier --ignore-unknown --check`) on `pre-commit` and `commitlint` (`@commitlint/config-conventional`) on `commit-msg`. Commit through the hooks rather than bypassing with `--no-verify`.
 - Run `pnpm verify` before finishing changes (runs `format:check`, `lint`, `typecheck`, `build`, and `test`).
 - When changing publishable `files`, `bin`, or `exports`, also inspect `pnpm --filter <pkg> pack --pack-destination /tmp`.

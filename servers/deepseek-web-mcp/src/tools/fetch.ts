@@ -1,16 +1,22 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { executeWithClient } from '../presenters/errors.ts';
+import {
+  MAX_TOOL_OUTPUT_CHARS,
+  sliceUtf16Safe,
+} from '../presenters/output-limit.ts';
 import type {
   DeepSeekWebClient,
   FetchResponse,
 } from '../services/deepseek-client.ts';
 
 const MAX_FETCH_URL_LENGTH = 8192;
+const MAX_FETCH_TITLE_CHARS = 500;
 
 const FETCH_DESCRIPTION = [
   'Fetch a single public web page and extract its content as Markdown.',
   'Use when you already have a concrete `http://` or `https://` URL (from the user or a `deepseek_search` result) and need the full page text rather than a search summary.',
+  `Outputs exceeding ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')} characters are truncated with a notice.`,
   'Limitations: fetches one public page per call; cannot log into authenticated/paywalled pages, read binary files, or bypass sites that block automated access (which fail with HTTP 403 or 404).',
 ].join(' ');
 
@@ -44,6 +50,65 @@ function formatFetchMarkdown(data: FetchResponse): string {
     return data.content;
   }
   return `# ${data.title}\n\n${data.content}`;
+}
+
+function buildFetchTruncationNotice(originalLength: number): string {
+  return `\n\n[Output truncated: exceeded the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit (original length: ${originalLength.toLocaleString('en-US')} characters).]`;
+}
+
+function applyFetchOutputLimit(data: FetchResponse): {
+  text: string;
+  structuredContent: FetchResponse;
+} {
+  const rendered = formatFetchMarkdown(data);
+  if (
+    rendered.length <= MAX_TOOL_OUTPUT_CHARS &&
+    data.content.length <= MAX_TOOL_OUTPUT_CHARS
+  ) {
+    return {
+      text: rendered,
+      structuredContent: data,
+    };
+  }
+
+  const notice = buildFetchTruncationNotice(rendered.length);
+  const safeTitle =
+    data.title.length > MAX_FETCH_TITLE_CHARS
+      ? `${sliceUtf16Safe(data.title, MAX_FETCH_TITLE_CHARS - 3)}...`
+      : data.title;
+
+  if (data.content === '') {
+    const titleOnly = `# ${safeTitle}`;
+    return {
+      text: `${titleOnly}${notice}`,
+      structuredContent: {
+        title: safeTitle,
+        content: '',
+      },
+    };
+  }
+
+  const firstNonEmptyLine = data.content
+    .split('\n')
+    .find((line) => line.trim() !== '');
+  const hasLeadingTitle =
+    safeTitle !== '' && firstNonEmptyLine?.trim() === `# ${safeTitle.trim()}`;
+  const titlePrefix =
+    safeTitle === '' || hasLeadingTitle ? '' : `# ${safeTitle}\n\n`;
+
+  const maxBodyChars = Math.max(
+    0,
+    MAX_TOOL_OUTPUT_CHARS - titlePrefix.length - notice.length,
+  );
+  const truncatedContent = `${sliceUtf16Safe(data.content, maxBodyChars)}${notice}`;
+
+  return {
+    text: `${titlePrefix}${truncatedContent}`,
+    structuredContent: {
+      title: safeTitle,
+      content: truncatedContent,
+    },
+  };
 }
 
 export function registerFetchTool(
@@ -81,15 +146,16 @@ export function registerFetchTool(
     (args, extra) =>
       executeWithClient('fetch', client, extra.signal, async (activeClient) => {
         const data = await activeClient.fetch({ url: args.url }, extra.signal);
+        const limited = applyFetchOutputLimit(data);
 
         return {
           content: [
             {
               type: 'text',
-              text: formatFetchMarkdown(data),
+              text: limited.text,
             },
           ],
-          structuredContent: data,
+          structuredContent: limited.structuredContent,
         };
       }),
   );

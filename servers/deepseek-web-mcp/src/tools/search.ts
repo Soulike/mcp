@@ -1,6 +1,10 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { executeWithClient } from '../presenters/errors.ts';
+import {
+  MAX_TOOL_OUTPUT_CHARS,
+  sliceUtf16Safe,
+} from '../presenters/output-limit.ts';
 import type {
   DeepSeekWebClient,
   SearchResponse,
@@ -8,11 +12,14 @@ import type {
 } from '../services/deepseek-client.ts';
 
 const MAX_SEARCH_TEXT_CODE_POINTS = 128;
+const RESULT_SEPARATOR = '\n\n---\n\n';
+const CONTENT_SECTION_HEADER = '\n\n### Content\n\n';
 
 const SEARCH_DESCRIPTION = [
   'Search live web pages when you need up-to-date information or do not have a specific URL yet.',
   'Returns ranked results with URLs, publish dates, quality/authority scores, and ~600-800 character summaries.',
   'By default full page bodies are omitted (`need_content=false`); prefer reviewing summaries first and calling `deepseek_fetch` on selected URLs rather than enabling `need_content=true` across many results.',
+  `Outputs exceeding ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')} characters keep the highest-ranked results that fit and omit the rest with a notice.`,
   'Limitations: text web search only—does not support image search.',
   'Query operators: join multiple `site:` filters with `OR` (`site:a.com OR site:b.com`); separate `-site:`, `-term`, `-"phrase"`, and `"exact phrase"` with spaces; use comma-separated language codes (`lang:zh,en`); and use `after:YYYY` / `after:YYYY-MM-DD` or `before:YYYY` / `before:YYYY-MM-DD` for date bounds.',
 ].join(' ');
@@ -95,7 +102,160 @@ function formatSearchMarkdown(query: string, data: SearchResponse): string {
   if (data.results.length === 0) {
     return `No results found for "${query}". Try broadening the keywords or removing restrictive site:/date/language operators.`;
   }
-  return data.results.map(formatSearchResult).join('\n\n---\n\n');
+  return data.results.map(formatSearchResult).join(RESULT_SEPARATOR);
+}
+
+function buildSearchTruncationNotice(
+  shownCount: number,
+  totalCount: number,
+): string {
+  return `\n\n[Output truncated: showing top ${shownCount} of ${totalCount} results due to the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit. Narrow your query, reduce count, or omit need_content to see more results.]`;
+}
+
+function buildFirstResultTruncatedNotice(totalCount: number): string {
+  const omittedPart =
+    totalCount > 1
+      ? `, and ${totalCount - 1} remaining result(s) were omitted`
+      : '';
+  return `\n\n[Output truncated: result 1 exceeded the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit and was truncated${omittedPart}. Narrow your query, omit need_content, or call deepseek_fetch on the URL.]`;
+}
+
+function truncateSingleSearchResult(
+  result: SearchResult,
+  budget: number,
+): SearchResult {
+  const withoutContent: SearchResult = { ...result, content: '' };
+  const withoutContentText = formatSearchResult(withoutContent, 0);
+
+  if (result.content !== '') {
+    const remainingForContent =
+      budget - withoutContentText.length - CONTENT_SECTION_HEADER.length;
+    if (remainingForContent > 0) {
+      return {
+        ...result,
+        content: sliceUtf16Safe(result.content, remainingForContent),
+      };
+    }
+  }
+
+  if (withoutContentText.length <= budget) {
+    return withoutContent;
+  }
+
+  const withoutOverview: SearchResult = {
+    ...withoutContent,
+    summary: '',
+    snippet: '',
+  };
+  const withoutOverviewText = formatSearchResult(withoutOverview, 0);
+  const overviewSource =
+    result.summary !== '' ? result.summary : result.snippet;
+  if (overviewSource !== '') {
+    const remainingForOverview = budget - withoutOverviewText.length - 2;
+    if (remainingForOverview > 0) {
+      const slicedOverview = sliceUtf16Safe(
+        overviewSource,
+        remainingForOverview,
+      );
+      return result.summary !== ''
+        ? {
+            ...withoutOverview,
+            summary: slicedOverview,
+            snippet: sliceUtf16Safe(result.snippet, remainingForOverview),
+          }
+        : {
+            ...withoutOverview,
+            snippet: slicedOverview,
+          };
+    }
+  }
+
+  const maxTitleChars = Math.max(
+    0,
+    budget - (withoutOverviewText.length - result.title.length),
+  );
+  return {
+    ...withoutOverview,
+    title: sliceUtf16Safe(result.title, maxTitleChars),
+  };
+}
+
+function applySearchOutputLimit(
+  query: string,
+  data: SearchResponse,
+): {
+  text: string;
+  structuredContent: SearchResponse;
+} {
+  if (data.results.length === 0) {
+    return {
+      text: formatSearchMarkdown(query, data),
+      structuredContent: data,
+    };
+  }
+
+  const formattedItems = data.results.map(formatSearchResult);
+  const fullText = formattedItems.join(RESULT_SEPARATOR);
+  if (fullText.length <= MAX_TOOL_OUTPUT_CHARS) {
+    return {
+      text: fullText,
+      structuredContent: data,
+    };
+  }
+
+  let keptCount = 0;
+  let currentLength = 0;
+  for (let index = 0; index < formattedItems.length; index++) {
+    const item = formattedItems[index];
+    if (item === undefined) {
+      continue;
+    }
+    const separatorLength = index === 0 ? 0 : RESULT_SEPARATOR.length;
+    const candidateLength = currentLength + separatorLength + item.length;
+    const notice = buildSearchTruncationNotice(
+      index + 1,
+      formattedItems.length,
+    );
+    if (candidateLength + notice.length <= MAX_TOOL_OUTPUT_CHARS) {
+      keptCount = index + 1;
+      currentLength = candidateLength;
+    } else {
+      break;
+    }
+  }
+
+  if (keptCount > 0) {
+    const notice = buildSearchTruncationNotice(keptCount, data.results.length);
+    return {
+      text: `${formattedItems.slice(0, keptCount).join(RESULT_SEPARATOR)}${notice}`,
+      structuredContent: {
+        results: data.results.slice(0, keptCount),
+      },
+    };
+  }
+
+  const first = data.results[0];
+  if (first === undefined) {
+    return {
+      text: formatSearchMarkdown(query, { results: [] }),
+      structuredContent: { results: [] },
+    };
+  }
+
+  const notice = buildFirstResultTruncatedNotice(data.results.length);
+  const budget = Math.max(0, MAX_TOOL_OUTPUT_CHARS - notice.length);
+  const truncatedFirst = truncateSingleSearchResult(first, budget);
+  const truncatedText = sliceUtf16Safe(
+    formatSearchResult(truncatedFirst, 0),
+    budget,
+  );
+
+  return {
+    text: `${truncatedText}${notice}`,
+    structuredContent: {
+      results: [truncatedFirst],
+    },
+  };
 }
 
 export function registerSearchTool(
@@ -195,15 +355,16 @@ export function registerSearchTool(
             },
             extra.signal,
           );
+          const limited = applySearchOutputLimit(args.query, data);
 
           return {
             content: [
               {
                 type: 'text',
-                text: formatSearchMarkdown(args.query, data),
+                text: limited.text,
               },
             ],
-            structuredContent: data,
+            structuredContent: limited.structuredContent,
           };
         },
       ),

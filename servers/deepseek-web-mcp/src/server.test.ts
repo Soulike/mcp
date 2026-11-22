@@ -494,6 +494,29 @@ await describe('deepseek-web-mcp server', async () => {
     );
   });
 
+  await it('maps malformed upstream 200 payloads to tool errors', async () => {
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ unexpected: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/bad-shape' },
+        });
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent, undefined);
+        assert.match(getFirstTextContent(result), /unexpected response shape/i);
+      },
+    );
+  });
+
   await it('propagates MCP request cancellation signal to fetch', async () => {
     const controller = new AbortController();
     let resolveAborted: (() => void) | undefined;

@@ -11,6 +11,7 @@ const NPM_REGISTRY_BASE_URL = 'https://registry.npmjs.org';
 const NPM_ATTESTATIONS_BASE_URL =
   'https://registry.npmjs.org/-/npm/v1/attestations';
 const SLSA_PROVENANCE_V1_TYPE = 'https://slsa.dev/provenance/v1';
+const MIN_TRUSTED_PUBLISHING_NPM_VERSION = '11.5.1';
 const GITHUB_RELEASES_API_BASE =
   'https://api.github.com/repos/Soulike/mcp/releases/tags';
 
@@ -31,6 +32,7 @@ export interface PrepareReleaseOptions {
   finalizeExisting?: boolean | undefined;
   githubToken?: string | undefined;
   fetchFn?: typeof fetch | undefined;
+  getNpmVersion?: (() => string) | undefined;
 }
 
 function isStrictSemver(version: string): boolean {
@@ -277,6 +279,27 @@ function findOriginTagSha(repoDir: string, tag: string): string | undefined {
   return peeledSha ?? directSha;
 }
 
+function readDefaultNpmVersion(): string {
+  return execFileSync('npm', ['--version'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function ensureCompatibleNpmVersion(
+  getNpmVersion: (() => string) | undefined,
+): void {
+  const npmVersion = (getNpmVersion ?? readDefaultNpmVersion)();
+  if (
+    semver.valid(npmVersion) === null ||
+    !semver.gte(npmVersion, MIN_TRUSTED_PUBLISHING_NPM_VERSION)
+  ) {
+    throw new Error(
+      `npm >= ${MIN_TRUSTED_PUBLISHING_NPM_VERSION} is required for OIDC trusted publishing (found "${npmVersion}").`,
+    );
+  }
+}
+
 export async function prepareRelease(
   options: PrepareReleaseOptions,
 ): Promise<PreparedRelease> {
@@ -308,6 +331,7 @@ export async function prepareRelease(
   }
 
   if (!finalizeExisting) {
+    ensureCompatibleNpmVersion(options.getNpmVersion);
     if (npmExists) {
       throw new Error(
         `${manifest.name}@${manifest.version} is already published on npm. Re-run with finalize_existing=true only to complete a missing GitHub release for this commit.`,

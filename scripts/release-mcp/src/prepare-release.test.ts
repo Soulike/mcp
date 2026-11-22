@@ -151,6 +151,7 @@ await describe('prepareRelease', async () => {
         packageDir: 'servers/alpha-mcp',
         ref: 'refs/heads/main',
         requireRef: 'refs/heads/main',
+        getNpmVersion: () => '11.5.1',
         fetchFn: createStubFetch({
           npmStatus: 404,
           githubReleaseStatus: 404,
@@ -235,6 +236,21 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
+            getNpmVersion: () => '10.9.9',
+            fetchFn: createStubFetch({
+              npmStatus: 404,
+              githubReleaseStatus: 404,
+            }),
+          }),
+        /npm >= 11\.5\.1 is required/,
+      );
+
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            getNpmVersion: () => '11.5.1',
             fetchFn: createStubFetch({
               npmStatus: 200,
               githubReleaseStatus: 404,
@@ -248,6 +264,7 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
+            getNpmVersion: () => '11.5.1',
             fetchFn: createStubFetch({
               npmStatus: 404,
               githubReleaseStatus: 200,
@@ -261,6 +278,7 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
+            getNpmVersion: () => '11.5.1',
             fetchFn: createStubFetch({
               npmStatus: 503,
               githubReleaseStatus: 404,
@@ -277,6 +295,7 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
+            getNpmVersion: () => '11.5.1',
             fetchFn: createStubFetch({
               npmStatus: 404,
               githubReleaseStatus: 404,

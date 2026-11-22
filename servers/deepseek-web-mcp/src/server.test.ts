@@ -60,6 +60,10 @@ async function withClient(
 await describe('deepseek-web-mcp server', async () => {
   await it('lists deepseek_search and deepseek_fetch with read-only open-world annotations', async () => {
     await withClient(undefined, async (client) => {
+      assert.deepEqual(client.getServerVersion(), {
+        name: 'deepseek-web-mcp',
+        version: '0.1.0',
+      });
       const { tools } = await client.listTools();
       assert.deepEqual(
         tools.map((tool) => ({

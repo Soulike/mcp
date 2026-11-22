@@ -37,8 +37,12 @@ Search the web using `POST https://api.deepseek.com/v1/tools/search`.
 - `localization` (string, optional): IP address for localized results.
 - `need_content` (boolean, optional): Include full page text in `content` (default `false`).
 
+Outputs exceeding 20,000 characters keep the highest-ranked results that fit and omit the rest with a truncation notice.
+
 ### `deepseek_fetch`
 
 Fetch a web page as Markdown using `POST https://api.deepseek.com/v1/tools/fetch`.
 
 - `url` (string, required): HTTP/HTTPS URL with a host, max 8192 characters, without embedded username or password.
+
+Outputs exceeding 20,000 characters are truncated with a notice.

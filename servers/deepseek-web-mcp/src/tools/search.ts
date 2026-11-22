@@ -1,6 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { executeWithClient } from '../presenters/errors.ts';
+import {
+  MAX_TOOL_OUTPUT_CHARS,
+  sliceForJsonBudget,
+  sliceUtf16Safe,
+} from '../presenters/output-limit.ts';
 import type {
   DeepSeekWebClient,
   SearchResponse,
@@ -8,11 +13,15 @@ import type {
 } from '../services/deepseek-client.ts';
 
 const MAX_SEARCH_TEXT_CODE_POINTS = 128;
+const RESULT_SEPARATOR = '\n\n---\n\n';
+const CONTENT_SECTION_HEADER = '\n\n### Content\n\n';
+const SEARCH_JSON_WRAPPER_LENGTH = '{"results":[]}'.length;
 
 const SEARCH_DESCRIPTION = [
   'Search live web pages when you need up-to-date information or do not have a specific URL yet.',
   'Returns ranked results with URLs, publish dates, quality/authority scores, and ~600-800 character summaries.',
   'By default full page bodies are omitted (`need_content=false`); prefer reviewing summaries first and calling `deepseek_fetch` on selected URLs rather than enabling `need_content=true` across many results.',
+  `Outputs exceeding ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')} characters keep the highest-ranked results that fit and omit the rest with a notice.`,
   'Limitations: text web search only—does not support image search.',
   'Query operators: join multiple `site:` filters with `OR` (`site:a.com OR site:b.com`); separate `-site:`, `-term`, `-"phrase"`, and `"exact phrase"` with spaces; use comma-separated language codes (`lang:zh,en`); and use `after:YYYY` / `after:YYYY-MM-DD` or `before:YYYY` / `before:YYYY-MM-DD` for date bounds.',
 ].join(' ');
@@ -95,7 +104,258 @@ function formatSearchMarkdown(query: string, data: SearchResponse): string {
   if (data.results.length === 0) {
     return `No results found for "${query}". Try broadening the keywords or removing restrictive site:/date/language operators.`;
   }
-  return data.results.map(formatSearchResult).join('\n\n---\n\n');
+  return data.results.map(formatSearchResult).join(RESULT_SEPARATOR);
+}
+
+function buildSearchTruncationNotice(
+  shownCount: number,
+  totalCount: number,
+): string {
+  return `\n\n[Output truncated: showing top ${shownCount} of ${totalCount} results due to the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit. Narrow your query, reduce count, or omit need_content to see more results.]`;
+}
+
+function buildFirstResultTruncatedNotice(totalCount: number): string {
+  const omittedPart =
+    totalCount > 1
+      ? `, and ${totalCount - 1} remaining result(s) were omitted`
+      : '';
+  return `\n\n[Output truncated: result 1 exceeded the ${MAX_TOOL_OUTPUT_CHARS.toLocaleString('en-US')}-character limit and was truncated${omittedPart}. Narrow your query, omit need_content, or call deepseek_fetch on the URL.]`;
+}
+
+function fitsSingleSearchBudget(
+  candidate: SearchResult,
+  markdownBudget: number,
+  jsonItemBudget: number,
+): boolean {
+  return (
+    formatSearchResult(candidate, 0).length <= markdownBudget &&
+    JSON.stringify(candidate).length <= jsonItemBudget
+  );
+}
+
+function truncateSingleSearchResult(
+  result: SearchResult,
+  markdownBudget: number,
+  jsonItemBudget: number,
+): SearchResult {
+  const withoutContent: SearchResult = { ...result, content: '' };
+  if (
+    result.content !== '' &&
+    fitsSingleSearchBudget(withoutContent, markdownBudget, jsonItemBudget)
+  ) {
+    const baseMarkdownLen = formatSearchResult(withoutContent, 0).length;
+    const baseJsonLen = JSON.stringify(withoutContent).length;
+    const maxContentPlain =
+      markdownBudget - baseMarkdownLen - CONTENT_SECTION_HEADER.length;
+    const maxContentJson = jsonItemBudget - baseJsonLen + 2;
+    if (maxContentPlain > 0 && maxContentJson >= 2) {
+      return {
+        ...withoutContent,
+        content: sliceForJsonBudget(
+          result.content,
+          maxContentJson,
+          maxContentPlain,
+        ),
+      };
+    }
+    return withoutContent;
+  }
+
+  let candidate: SearchResult = withoutContent;
+  if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+    return candidate;
+  }
+
+  if (candidate.site_icon !== null) {
+    candidate = { ...candidate, site_icon: null };
+    if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+      return candidate;
+    }
+  }
+
+  if (candidate.summary !== '' && candidate.snippet !== '') {
+    candidate = { ...candidate, snippet: '' };
+    if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+      return candidate;
+    }
+  }
+
+  const withoutOverview: SearchResult = {
+    ...candidate,
+    summary: '',
+    snippet: '',
+  };
+  const overviewSource =
+    result.summary !== '' ? result.summary : result.snippet;
+  if (
+    overviewSource !== '' &&
+    fitsSingleSearchBudget(withoutOverview, markdownBudget, jsonItemBudget)
+  ) {
+    const baseMarkdownLen = formatSearchResult(withoutOverview, 0).length;
+    const baseJsonLen = JSON.stringify(withoutOverview).length;
+    const maxOverviewPlain = markdownBudget - baseMarkdownLen - 2;
+    const maxOverviewJson = jsonItemBudget - baseJsonLen + 2;
+    if (maxOverviewPlain > 0 && maxOverviewJson >= 2) {
+      const slicedOverview = sliceForJsonBudget(
+        overviewSource,
+        maxOverviewJson,
+        maxOverviewPlain,
+      );
+      return result.summary !== ''
+        ? { ...withoutOverview, summary: slicedOverview }
+        : { ...withoutOverview, snippet: slicedOverview };
+    }
+    return withoutOverview;
+  }
+
+  candidate = withoutOverview;
+  if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+    return candidate;
+  }
+
+  if (candidate.site_name !== null) {
+    candidate = { ...candidate, site_name: null };
+    if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+      return candidate;
+    }
+  }
+
+  if (candidate.date !== null) {
+    candidate = { ...candidate, date: null };
+    if (fitsSingleSearchBudget(candidate, markdownBudget, jsonItemBudget)) {
+      return candidate;
+    }
+  }
+
+  const withoutTitle: SearchResult = { ...candidate, title: '' };
+  if (
+    candidate.title !== '' &&
+    fitsSingleSearchBudget(withoutTitle, markdownBudget, jsonItemBudget)
+  ) {
+    const maxTitlePlain =
+      markdownBudget - formatSearchResult(withoutTitle, 0).length;
+    const maxTitleJson =
+      jsonItemBudget - JSON.stringify(withoutTitle).length + 2;
+    return {
+      ...withoutTitle,
+      title: sliceForJsonBudget(candidate.title, maxTitleJson, maxTitlePlain),
+    };
+  }
+
+  candidate = withoutTitle;
+  const withoutUrl: SearchResult = { ...candidate, url: '' };
+  const maxUrlPlain = markdownBudget - formatSearchResult(withoutUrl, 0).length;
+  const maxUrlJson = jsonItemBudget - JSON.stringify(withoutUrl).length + 2;
+  return {
+    ...withoutUrl,
+    url: sliceForJsonBudget(candidate.url, maxUrlJson, maxUrlPlain),
+  };
+}
+
+function applySearchOutputLimit(
+  query: string,
+  data: SearchResponse,
+): {
+  text: string;
+  structuredContent: SearchResponse;
+} {
+  if (data.results.length === 0) {
+    return {
+      text: formatSearchMarkdown(query, data),
+      structuredContent: data,
+    };
+  }
+
+  const formattedItems = data.results.map(formatSearchResult);
+  const itemJsonLengths = data.results.map(
+    (item) => JSON.stringify(item).length,
+  );
+  const fullText = formattedItems.join(RESULT_SEPARATOR);
+  const fullJsonLength =
+    SEARCH_JSON_WRAPPER_LENGTH +
+    itemJsonLengths.reduce((sum, len) => sum + len, 0) +
+    Math.max(0, itemJsonLengths.length - 1);
+
+  if (
+    fullText.length <= MAX_TOOL_OUTPUT_CHARS &&
+    fullJsonLength <= MAX_TOOL_OUTPUT_CHARS
+  ) {
+    return {
+      text: fullText,
+      structuredContent: data,
+    };
+  }
+
+  let keptCount = 0;
+  let currentTextLength = 0;
+  let currentJsonLength = SEARCH_JSON_WRAPPER_LENGTH;
+  for (let index = 0; index < formattedItems.length; index++) {
+    const item = formattedItems[index];
+    const itemJsonLength = itemJsonLengths[index];
+    if (item === undefined || itemJsonLength === undefined) {
+      continue;
+    }
+    const separatorLength = index === 0 ? 0 : RESULT_SEPARATOR.length;
+    const candidateTextLength =
+      currentTextLength + separatorLength + item.length;
+    const candidateJsonLength =
+      currentJsonLength + (index === 0 ? 0 : 1) + itemJsonLength;
+    const notice = buildSearchTruncationNotice(
+      index + 1,
+      formattedItems.length,
+    );
+    if (
+      candidateTextLength + notice.length <= MAX_TOOL_OUTPUT_CHARS &&
+      candidateJsonLength <= MAX_TOOL_OUTPUT_CHARS
+    ) {
+      keptCount = index + 1;
+      currentTextLength = candidateTextLength;
+      currentJsonLength = candidateJsonLength;
+    } else {
+      break;
+    }
+  }
+
+  if (keptCount > 0) {
+    const notice = buildSearchTruncationNotice(keptCount, data.results.length);
+    return {
+      text: `${formattedItems.slice(0, keptCount).join(RESULT_SEPARATOR)}${notice}`,
+      structuredContent: {
+        results: data.results.slice(0, keptCount),
+      },
+    };
+  }
+
+  const first = data.results[0];
+  if (first === undefined) {
+    return {
+      text: formatSearchMarkdown(query, { results: [] }),
+      structuredContent: { results: [] },
+    };
+  }
+
+  const notice = buildFirstResultTruncatedNotice(data.results.length);
+  const markdownBudget = Math.max(0, MAX_TOOL_OUTPUT_CHARS - notice.length);
+  const jsonItemBudget = Math.max(
+    0,
+    MAX_TOOL_OUTPUT_CHARS - SEARCH_JSON_WRAPPER_LENGTH,
+  );
+  const truncatedFirst = truncateSingleSearchResult(
+    first,
+    markdownBudget,
+    jsonItemBudget,
+  );
+  const truncatedText = sliceUtf16Safe(
+    formatSearchResult(truncatedFirst, 0),
+    markdownBudget,
+  );
+
+  return {
+    text: `${truncatedText}${notice}`,
+    structuredContent: {
+      results: [truncatedFirst],
+    },
+  };
 }
 
 export function registerSearchTool(
@@ -195,15 +455,16 @@ export function registerSearchTool(
             },
             extra.signal,
           );
+          const limited = applySearchOutputLimit(args.query, data);
 
           return {
             content: [
               {
                 type: 'text',
-                text: formatSearchMarkdown(args.query, data),
+                text: limited.text,
               },
             ],
-            structuredContent: data,
+            structuredContent: limited.structuredContent,
           };
         },
       ),

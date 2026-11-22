@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+  sliceForJsonBudget,
+  sliceUtf16Safe,
+} from './presenters/output-limit.ts';
 import { createServer } from './server.ts';
 import { createDeepSeekWebClient } from './services/deepseek-client.ts';
 
@@ -397,6 +401,233 @@ await describe('deepseek-web-mcp server', async () => {
     );
   });
 
+  await it('truncates oversized fetch output and structuredContent with a notice without splitting surrogate pairs', async () => {
+    const body = `${'a'.repeat(19_802)}${'🚀'.repeat(200)}`;
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            title: 'Oversized Article',
+            content: body,
+          }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/oversized' },
+        });
+
+        assert.equal(result.isError, undefined);
+        const text = getFirstTextContent(result);
+        assert.ok(text.length <= 20_000);
+        assert.match(text, /^# Oversized Article\n\na+/);
+        assert.match(text, /\[Output truncated:/);
+        assert.equal(text.isWellFormed(), true);
+
+        assert.ok(
+          typeof result.structuredContent === 'object' &&
+            result.structuredContent !== null &&
+            'title' in result.structuredContent &&
+            typeof result.structuredContent.title === 'string' &&
+            'content' in result.structuredContent &&
+            typeof result.structuredContent.content === 'string',
+        );
+        assert.equal(result.structuredContent.title, 'Oversized Article');
+        assert.ok(result.structuredContent.content.length <= 20_000);
+        assert.match(result.structuredContent.content, /\[Output truncated:/);
+        assert.equal(result.structuredContent.content.isWellFormed(), true);
+        assert.equal(JSON.stringify(result.structuredContent).length, 19_999);
+      },
+    );
+  });
+
+  await it('avoids splitting surrogate pairs when plain-character truncation is tighter than the JSON budget', () => {
+    const slicedPlain = sliceUtf16Safe('a🚀', 2);
+    assert.equal(slicedPlain, 'a');
+    assert.equal(slicedPlain.isWellFormed(), true);
+
+    const slicedJson = sliceForJsonBudget('a🚀', 100, 2);
+    assert.equal(slicedJson, 'a');
+    assert.equal(slicedJson.isWellFormed(), true);
+  });
+
+  await it('keeps highest-ranked search results that fit and drops trailing results once adding one exceeds the output cap', async () => {
+    const results = [1, 2, 3, 4].map((index) => ({
+      rerank_score: 3 - index * 0.2,
+      title: `Result ${index}`,
+      url: `https://example.com/${index}`,
+      snippet: `Snippet ${index}`,
+      summary: `Summary-${index}-` + 'x'.repeat(7_000),
+      content: '',
+      site_name: 'Example',
+      site_icon: null,
+      date: null,
+      authority: 3,
+    }));
+
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ results }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'large search results' },
+        });
+
+        assert.equal(result.isError, undefined);
+        const text = getFirstTextContent(result);
+        assert.ok(text.length <= 20_000);
+        assert.match(text, /Result 1/);
+        assert.match(text, /Result 2/);
+        assert.doesNotMatch(text, /Result 3/);
+        assert.doesNotMatch(text, /Result 4/);
+        assert.match(text, /showing top 2 of 4 results/i);
+
+        assert.deepEqual(result.structuredContent, {
+          results: results.slice(0, 2),
+        });
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
+      },
+    );
+  });
+
+  await it('enforces the output cap when Markdown fits but serialized structuredContent exceeds 20,000 characters', async () => {
+    const results = Array.from({ length: 20 }, (_, index) => ({
+      rerank_score: 2.5 - index * 0.05,
+      title: `Item ${index + 1}`,
+      url: `https://example.com/item-${index + 1}`,
+      snippet: `s${index + 1}-` + 'y'.repeat(200),
+      summary: `Summary ${index + 1}: ` + 'x'.repeat(780),
+      content: '',
+      site_name: 'Example',
+      site_icon: `https://example.com/icons/${index + 1}/` + 'i'.repeat(120),
+      date: '2026-06-01T00:00:00+00:00',
+      authority: 3,
+    }));
+
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ results }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'structured payload cap' },
+        });
+
+        assert.equal(result.isError, undefined);
+        const text = getFirstTextContent(result);
+        assert.ok(text.length <= 20_000);
+        assert.match(
+          text,
+          /\[Output truncated: showing top \d+ of 20 results/i,
+        );
+
+        assert.ok(
+          typeof result.structuredContent === 'object' &&
+            result.structuredContent !== null &&
+            'results' in result.structuredContent &&
+            Array.isArray(result.structuredContent.results),
+        );
+        assert.ok(result.structuredContent.results.length > 0);
+        assert.ok(result.structuredContent.results.length < 20);
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
+      },
+    );
+  });
+
+  await it('truncates the first search result in place rather than returning zero results when result 1 alone exceeds the cap', async () => {
+    const results = [
+      {
+        rerank_score: 2.9,
+        title: 'Massive First Result',
+        url: 'https://example.com/first',
+        snippet: 'First snippet',
+        summary: 'First summary',
+        content: 'z'.repeat(25_000),
+        site_name: 'Example',
+        site_icon: null,
+        date: null,
+        authority: 4,
+      },
+      {
+        rerank_score: 2.1,
+        title: 'Second Result',
+        url: 'https://example.com/second',
+        snippet: 'Second snippet',
+        summary: 'Second summary',
+        content: 'Short body',
+        site_name: 'Example',
+        site_icon: null,
+        date: null,
+        authority: 2,
+      },
+    ];
+
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ results }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'massive first result', need_content: true },
+        });
+
+        assert.equal(result.isError, undefined);
+        const text = getFirstTextContent(result);
+        assert.ok(text.length <= 20_000);
+        assert.match(text, /Massive First Result/);
+        assert.doesNotMatch(text, /Second Result/);
+        assert.match(text, /result 1 exceeded.*1 remaining result/i);
+
+        assert.ok(
+          typeof result.structuredContent === 'object' &&
+            result.structuredContent !== null &&
+            'results' in result.structuredContent &&
+            Array.isArray(result.structuredContent.results),
+        );
+        assert.equal(result.structuredContent.results.length, 1);
+        const first: unknown = result.structuredContent.results[0];
+        assert.ok(
+          typeof first === 'object' &&
+            first !== null &&
+            'content' in first &&
+            typeof first.content === 'string',
+        );
+        assert.ok(first.content.length < 20_000);
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
+      },
+    );
+  });
+
   await it('validates fetch URL protocol, credentials, and length before calling fetch', async () => {
     let fetchCalled = false;
     const stubFetch: typeof fetch = () => {
@@ -522,6 +753,51 @@ await describe('deepseek-web-mcp server', async () => {
         assert.match(gatewayText, /502/);
         assert.match(gatewayText, /Bad Gateway/);
         assert.match(gatewayText, /retry/i);
+      },
+    );
+  });
+
+  await it('caps oversized upstream HTTP error bodies at 20,000 characters while preserving status and guidance for both tools', async () => {
+    const oversizedBody = `${'e'.repeat(29_999)}🚀`;
+    const responseQueue: Response[] = [
+      new Response(oversizedBody, { status: 502 }),
+      new Response(oversizedBody, { status: 504 }),
+    ];
+
+    const stubFetch: typeof fetch = () => {
+      const next = responseQueue.shift();
+      assert.ok(next);
+      return Promise.resolve(next);
+    };
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const searchError = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'oversized search error' },
+        });
+        assert.equal(searchError.isError, true);
+        assert.equal(searchError.structuredContent, undefined);
+        const searchErrorText = getFirstTextContent(searchError);
+        assert.ok(searchErrorText.length <= 20_000);
+        assert.equal(searchErrorText.isWellFormed(), true);
+        assert.match(searchErrorText, /DeepSeek Search failed \(HTTP 502\)/);
+        assert.match(searchErrorText, /\[upstream error detail truncated\]/);
+        assert.match(searchErrorText, /safe to retry after a brief pause/i);
+
+        const fetchError = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/oversized-error' },
+        });
+        assert.equal(fetchError.isError, true);
+        assert.equal(fetchError.structuredContent, undefined);
+        const fetchErrorText = getFirstTextContent(fetchError);
+        assert.ok(fetchErrorText.length <= 20_000);
+        assert.equal(fetchErrorText.isWellFormed(), true);
+        assert.match(fetchErrorText, /DeepSeek Fetch failed \(HTTP 504\)/);
+        assert.match(fetchErrorText, /\[upstream error detail truncated\]/);
+        assert.match(fetchErrorText, /safe to retry after a brief pause/i);
       },
     );
   });

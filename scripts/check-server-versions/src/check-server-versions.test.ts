@@ -260,4 +260,71 @@ await describe('checkServerVersions against Git revisions', async () => {
       );
     });
   });
+
+  await it('compares the full push range (before..after) across multi-commit pushes and branch creation', async () => {
+    await withTempRepo(async (repoDir) => {
+      await mkdir(join(repoDir, 'servers/alpha-mcp/src'), { recursive: true });
+      await writeJson(join(repoDir, 'servers/alpha-mcp/package.json'), {
+        name: '@soulike/alpha-mcp',
+        version: '0.1.0',
+      });
+      await writeFile(
+        join(repoDir, 'servers/alpha-mcp/src/server.ts'),
+        'export const v = 1;\n',
+      );
+      const before = commitAll(repoDir, 'init');
+
+      // Branch creation (all-zeros before SHA) checks initial package.
+      const branchCreationRevs = resolveGitHubActionsRevisions(repoDir, {
+        EVENT_NAME: 'push',
+        PUSH_BEFORE_SHA: '0000000000000000000000000000000000000000',
+        PUSH_AFTER_SHA: before,
+      });
+      assert.deepEqual(
+        checkServerVersions({ repoDir, ...branchCreationRevs }),
+        { checkedPackages: ['alpha-mcp'] },
+      );
+
+      // Multi-commit push: commit 1 bumps version, commit 2 modifies source.
+      await writeJson(join(repoDir, 'servers/alpha-mcp/package.json'), {
+        name: '@soulike/alpha-mcp',
+        version: '0.1.1',
+      });
+      commitAll(repoDir, 'bump version');
+
+      await writeFile(
+        join(repoDir, 'servers/alpha-mcp/src/server.ts'),
+        'export const v = 2;\n',
+      );
+      const afterValid = commitAll(repoDir, 'edit source');
+
+      const validPushRevs = resolveGitHubActionsRevisions(repoDir, {
+        EVENT_NAME: 'push',
+        PUSH_BEFORE_SHA: before,
+        PUSH_AFTER_SHA: afterValid,
+      });
+      assert.deepEqual(checkServerVersions({ repoDir, ...validPushRevs }), {
+        checkedPackages: ['alpha-mcp'],
+      });
+
+      // Multi-commit push: commit 1 edits source without bump, commit 2 touches root file only.
+      await writeFile(
+        join(repoDir, 'servers/alpha-mcp/src/server.ts'),
+        'export const v = 3;\n',
+      );
+      commitAll(repoDir, 'edit source without bump');
+      await writeFile(join(repoDir, 'README.md'), '# root update\n');
+      const afterUnbumped = commitAll(repoDir, 'root-only commit');
+
+      const unbumpedPushRevs = resolveGitHubActionsRevisions(repoDir, {
+        EVENT_NAME: 'push',
+        PUSH_BEFORE_SHA: afterValid,
+        PUSH_AFTER_SHA: afterUnbumped,
+      });
+      assert.throws(
+        () => checkServerVersions({ repoDir, ...unbumpedPushRevs }),
+        /servers\/alpha-mcp changed without bumping package\.json version/,
+      );
+    });
+  });
 });

@@ -187,6 +187,21 @@ export function resolveGitHubActionsRevisions(
     return { baseRev, headRev };
   }
 
+  const pushBefore = env['PUSH_BEFORE_SHA'];
+  const pushAfter = env['PUSH_AFTER_SHA'];
+  if (pushAfter !== undefined && pushAfter !== '') {
+    const emptyTree = runGit(repoDir, [
+      'hash-object',
+      '-t',
+      'tree',
+      '/dev/null',
+    ]).trim();
+    const isBranchCreation =
+      pushBefore === undefined || pushBefore === '' || /^0+$/.test(pushBefore);
+    const baseRev = isBranchCreation ? emptyTree : pushBefore;
+    return { baseRev, headRev: pushAfter };
+  }
+
   const headRev = runGit(repoDir, ['rev-parse', 'HEAD']).trim();
   const baseRev = gitObjectExists(repoDir, 'HEAD~1')
     ? runGit(repoDir, ['rev-parse', 'HEAD~1']).trim()

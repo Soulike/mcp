@@ -1,9 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import {
-  createMissingApiKeyResult,
-  createToolErrorResult,
-} from '../presenters/errors.ts';
+import { executeWithClient } from '../presenters/errors.ts';
 import type {
   DeepSeekWebClient,
   FetchResponse,
@@ -81,13 +78,9 @@ export function registerFetchTool(
         openWorldHint: true,
       },
     },
-    async (args, extra) => {
-      if (client === undefined) {
-        return createMissingApiKeyResult();
-      }
-
-      try {
-        const data = await client.fetch({ url: args.url }, extra.signal);
+    (args, extra) =>
+      executeWithClient('fetch', client, extra.signal, async (activeClient) => {
+        const data = await activeClient.fetch({ url: args.url }, extra.signal);
 
         return {
           content: [
@@ -98,12 +91,6 @@ export function registerFetchTool(
           ],
           structuredContent: data,
         };
-      } catch (error: unknown) {
-        if (extra.signal.aborted) {
-          throw error;
-        }
-        return createToolErrorResult('fetch', error);
-      }
-    },
+      }),
   );
 }

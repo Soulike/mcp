@@ -2,6 +2,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import {
   DeepSeekApiError,
   type DeepSeekOperation,
+  type DeepSeekWebClient,
 } from '../services/deepseek-client.ts';
 
 function operationLabel(operation: DeepSeekOperation): string {
@@ -82,7 +83,7 @@ export function createMissingApiKeyResult(): CallToolResult {
   };
 }
 
-export function createToolErrorResult(
+function createToolErrorResult(
   operation: DeepSeekOperation,
   error: unknown,
 ): CallToolResult {
@@ -104,4 +105,24 @@ export function createToolErrorResult(
     ],
     isError: true,
   };
+}
+
+export async function executeWithClient(
+  operation: DeepSeekOperation,
+  client: DeepSeekWebClient | undefined,
+  signal: AbortSignal,
+  run: (activeClient: DeepSeekWebClient) => Promise<CallToolResult>,
+): Promise<CallToolResult> {
+  if (client === undefined) {
+    return createMissingApiKeyResult();
+  }
+
+  try {
+    return await run(client);
+  } catch (error: unknown) {
+    if (signal.aborted) {
+      throw error;
+    }
+    return createToolErrorResult(operation, error);
+  }
 }

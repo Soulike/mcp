@@ -1,9 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import {
-  createMissingApiKeyResult,
-  createToolErrorResult,
-} from '../presenters/errors.ts';
+import { executeWithClient } from '../presenters/errors.ts';
 import type {
   DeepSeekWebClient,
   SearchResponse,
@@ -176,44 +173,39 @@ export function registerSearchTool(
         openWorldHint: true,
       },
     },
-    async (args, extra) => {
-      if (client === undefined) {
-        return createMissingApiKeyResult();
-      }
-
-      try {
-        const data = await client.search(
-          {
-            query: args.query,
-            ...(args.count !== undefined ? { count: args.count } : {}),
-            ...(args.ori_question !== undefined
-              ? { ori_question: args.ori_question }
-              : {}),
-            ...(args.localization !== undefined
-              ? { localization: args.localization }
-              : {}),
-            ...(args.need_content !== undefined
-              ? { need_content: args.need_content }
-              : {}),
-          },
-          extra.signal,
-        );
-
-        return {
-          content: [
+    (args, extra) =>
+      executeWithClient(
+        'search',
+        client,
+        extra.signal,
+        async (activeClient) => {
+          const data = await activeClient.search(
             {
-              type: 'text',
-              text: formatSearchMarkdown(args.query, data),
+              query: args.query,
+              ...(args.count !== undefined ? { count: args.count } : {}),
+              ...(args.ori_question !== undefined
+                ? { ori_question: args.ori_question }
+                : {}),
+              ...(args.localization !== undefined
+                ? { localization: args.localization }
+                : {}),
+              ...(args.need_content !== undefined
+                ? { need_content: args.need_content }
+                : {}),
             },
-          ],
-          structuredContent: data,
-        };
-      } catch (error: unknown) {
-        if (extra.signal.aborted) {
-          throw error;
-        }
-        return createToolErrorResult('search', error);
-      }
-    },
+            extra.signal,
+          );
+
+          return {
+            content: [
+              {
+                type: 'text',
+                text: formatSearchMarkdown(args.query, data),
+              },
+            ],
+            structuredContent: data,
+          };
+        },
+      ),
   );
 }

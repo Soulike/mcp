@@ -103,11 +103,36 @@ export class DeepSeekApiError extends Error {
   }
 }
 
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'TimeoutError';
+}
+
+function createTimeoutError(
+  operation: DeepSeekOperation,
+  cause: unknown,
+): DeepSeekApiError {
+  return new DeepSeekApiError({
+    operation,
+    kind: 'timeout',
+    message: `DeepSeek ${operation} request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
+    cause,
+  });
+}
+
 async function parseHttpError(
   operation: DeepSeekOperation,
   response: Response,
 ): Promise<DeepSeekApiError> {
-  const rawBody = (await response.text()).trim();
+  let rawBody: string;
+  try {
+    rawBody = (await response.text()).trim();
+  } catch (error: unknown) {
+    if (isTimeoutError(error)) {
+      return createTimeoutError(operation, error);
+    }
+    throw error;
+  }
+
   if (rawBody !== '') {
     try {
       const parsedJson: unknown = JSON.parse(rawBody);
@@ -174,13 +199,8 @@ export function createDeepSeekWebClient(
         ]),
       });
     } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'TimeoutError') {
-        throw new DeepSeekApiError({
-          operation,
-          kind: 'timeout',
-          message: `DeepSeek ${operation} request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
-          cause: error,
-        });
+      if (isTimeoutError(error)) {
+        throw createTimeoutError(operation, error);
       }
       throw error;
     }
@@ -193,6 +213,9 @@ export function createDeepSeekWebClient(
     try {
       rawJson = await response.json();
     } catch (error: unknown) {
+      if (isTimeoutError(error)) {
+        throw createTimeoutError(operation, error);
+      }
       throw new DeepSeekApiError({
         operation,
         kind: 'invalid_response',

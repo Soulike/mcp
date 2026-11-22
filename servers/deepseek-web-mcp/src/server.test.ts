@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from './server.ts';
+import { createDeepSeekWebClient } from './services/deepseek-client.ts';
 
 function extractUrl(input: string | URL | Request): string {
   if (typeof input === 'string') {
@@ -25,10 +26,17 @@ function getFirstTextContent(result: unknown): string {
 }
 
 async function withClient(
-  options: Parameters<typeof createServer>[0],
+  options:
+    | { apiKey?: string | undefined; fetch?: typeof fetch | undefined }
+    | undefined,
   run: (client: Client) => Promise<void>,
 ): Promise<void> {
-  const server = createServer(options);
+  const apiKey = options?.apiKey;
+  const deepSeekClient =
+    apiKey !== undefined && apiKey.trim() !== ''
+      ? createDeepSeekWebClient({ apiKey, fetchFn: options?.fetch })
+      : undefined;
+  const server = createServer({ client: deepSeekClient });
   const client = new Client({
     name: 'deepseek-web-mcp-test-client',
     version: '0.1.0',
@@ -513,6 +521,33 @@ await describe('deepseek-web-mcp server', async () => {
         assert.equal(result.isError, true);
         assert.equal(result.structuredContent, undefined);
         assert.match(getFirstTextContent(result), /unexpected response shape/i);
+      },
+    );
+  });
+
+  await it('maps TimeoutError during response body reading to timeout guidance', async () => {
+    const stubFetch: typeof fetch = () => {
+      const response = new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new DOMException('Timed out', 'TimeoutError'));
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+      return Promise.resolve(response);
+    };
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_fetch',
+          arguments: { url: 'https://example.com/slow-body' },
+        });
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent, undefined);
+        assert.match(getFirstTextContent(result), /timed out after 60s/i);
       },
     );
   });

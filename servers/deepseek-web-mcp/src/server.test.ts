@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+  sliceForJsonBudget,
+  sliceUtf16Safe,
+} from './presenters/output-limit.ts';
 import { createServer } from './server.ts';
 import { createDeepSeekWebClient } from './services/deepseek-client.ts';
 
@@ -443,6 +447,16 @@ await describe('deepseek-web-mcp server', async () => {
         assert.equal(JSON.stringify(result.structuredContent).length, 19_999);
       },
     );
+  });
+
+  await it('avoids splitting surrogate pairs when plain-character truncation is tighter than the JSON budget', () => {
+    const slicedPlain = sliceUtf16Safe('a🚀', 2);
+    assert.equal(slicedPlain, 'a');
+    assert.equal(slicedPlain.isWellFormed(), true);
+
+    const slicedJson = sliceForJsonBudget('a🚀', 100, 2);
+    assert.equal(slicedJson, 'a');
+    assert.equal(slicedJson.isWellFormed(), true);
   });
 
   await it('keeps highest-ranked search results that fit and drops trailing results once adding one exceeds the output cap', async () => {

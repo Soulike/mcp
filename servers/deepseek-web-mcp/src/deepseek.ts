@@ -78,16 +78,18 @@ async function formatHttpErrorMessage(
   return `DeepSeek ${operation} API failed (HTTP ${response.status})`;
 }
 
+export interface DeepSeekRequestOptions {
+  apiKey: string;
+  fetchFn: typeof fetch;
+  signal: AbortSignal;
+}
+
 async function postDeepSeekEndpoint<TResponse>(
   operation: 'Search' | 'Fetch',
   path: string,
   payload: unknown,
   schema: z.ZodType<TResponse>,
-  options: {
-    apiKey: string;
-    fetchFn: typeof fetch;
-    signal: AbortSignal;
-  },
+  options: DeepSeekRequestOptions,
 ): Promise<TResponse> {
   const response = await options.fetchFn(`${DEEPSEEK_API_BASE_URL}${path}`, {
     method: 'POST',
@@ -112,11 +114,7 @@ async function postDeepSeekEndpoint<TResponse>(
 
 export async function requestDeepSeekSearch(
   payload: SearchRequestPayload,
-  options: {
-    apiKey: string;
-    fetchFn: typeof fetch;
-    signal: AbortSignal;
-  },
+  options: DeepSeekRequestOptions,
 ): Promise<SearchResponse> {
   return postDeepSeekEndpoint(
     'Search',
@@ -129,11 +127,7 @@ export async function requestDeepSeekSearch(
 
 export async function requestDeepSeekFetch(
   payload: FetchRequestPayload,
-  options: {
-    apiKey: string;
-    fetchFn: typeof fetch;
-    signal: AbortSignal;
-  },
+  options: DeepSeekRequestOptions,
 ): Promise<FetchResponse> {
   return postDeepSeekEndpoint(
     'Fetch',

@@ -97,6 +97,24 @@ function resolveApiKey(options?: ServerOptions): string | undefined {
   return process.env['DEEPSEEK_API_KEY'];
 }
 
+function getValidatedApiKey(options?: ServerOptions): string | undefined {
+  const apiKey = resolveApiKey(options);
+  if (apiKey === undefined || apiKey.trim() === '') {
+    return undefined;
+  }
+  return apiKey;
+}
+
+const MISSING_API_KEY_RESULT = {
+  content: [
+    {
+      type: 'text' as const,
+      text: 'DEEPSEEK_API_KEY is not configured.',
+    },
+  ],
+  isError: true,
+};
+
 export function createServer(options?: ServerOptions): McpServer {
   const server = new McpServer({
     name: 'deepseek-web-mcp',
@@ -162,17 +180,9 @@ export function createServer(options?: ServerOptions): McpServer {
       annotations: TOOL_ANNOTATIONS,
     },
     async (args, extra) => {
-      const apiKey = resolveApiKey(options);
-      if (apiKey === undefined || apiKey.trim() === '') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'DEEPSEEK_API_KEY is not configured.',
-            },
-          ],
-          isError: true,
-        };
+      const apiKey = getValidatedApiKey(options);
+      if (apiKey === undefined) {
+        return MISSING_API_KEY_RESULT;
       }
 
       const data = await requestDeepSeekSearch(
@@ -232,17 +242,9 @@ export function createServer(options?: ServerOptions): McpServer {
       annotations: TOOL_ANNOTATIONS,
     },
     async (args, extra) => {
-      const apiKey = resolveApiKey(options);
-      if (apiKey === undefined || apiKey.trim() === '') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: 'DEEPSEEK_API_KEY is not configured.',
-            },
-          ],
-          isError: true,
-        };
+      const apiKey = getValidatedApiKey(options);
+      if (apiKey === undefined) {
+        return MISSING_API_KEY_RESULT;
       }
 
       const data = await requestDeepSeekFetch(

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { executeWithClient } from '../presenters/errors.ts';
 import {
   MAX_TOOL_OUTPUT_CHARS,
-  sliceUtf16Safe,
+  sliceForJsonBudget,
 } from '../presenters/output-limit.ts';
 import type {
   DeepSeekWebClient,
@@ -61,9 +61,10 @@ function applyFetchOutputLimit(data: FetchResponse): {
   structuredContent: FetchResponse;
 } {
   const rendered = formatFetchMarkdown(data);
+  const jsonLength = JSON.stringify(data).length;
   if (
     rendered.length <= MAX_TOOL_OUTPUT_CHARS &&
-    data.content.length <= MAX_TOOL_OUTPUT_CHARS
+    jsonLength <= MAX_TOOL_OUTPUT_CHARS
   ) {
     return {
       text: rendered,
@@ -71,10 +72,13 @@ function applyFetchOutputLimit(data: FetchResponse): {
     };
   }
 
-  const notice = buildFetchTruncationNotice(rendered.length);
+  const notice = buildFetchTruncationNotice(
+    Math.max(rendered.length, jsonLength),
+  );
   const safeTitle =
-    data.title.length > MAX_FETCH_TITLE_CHARS
-      ? `${sliceUtf16Safe(data.title, MAX_FETCH_TITLE_CHARS - 3)}...`
+    data.title.length > MAX_FETCH_TITLE_CHARS ||
+    JSON.stringify(data.title).length > MAX_FETCH_TITLE_CHARS * 2
+      ? `${sliceForJsonBudget(data.title, MAX_FETCH_TITLE_CHARS * 2 - 3, MAX_FETCH_TITLE_CHARS - 3)}...`
       : data.title;
 
   if (data.content === '') {
@@ -96,11 +100,24 @@ function applyFetchOutputLimit(data: FetchResponse): {
   const titlePrefix =
     safeTitle === '' || hasLeadingTitle ? '' : `# ${safeTitle}\n\n`;
 
-  const maxBodyChars = Math.max(
+  const maxBodyPlainChars = Math.max(
     0,
     MAX_TOOL_OUTPUT_CHARS - titlePrefix.length - notice.length,
   );
-  const truncatedContent = `${sliceUtf16Safe(data.content, maxBodyChars)}${notice}`;
+  const noticeJsonEnvelopeLength = JSON.stringify({
+    title: safeTitle,
+    content: notice,
+  }).length;
+  const maxBodyJsonChars = Math.max(
+    2,
+    MAX_TOOL_OUTPUT_CHARS - noticeJsonEnvelopeLength + 2,
+  );
+  const bodySlice = sliceForJsonBudget(
+    data.content,
+    maxBodyJsonChars,
+    maxBodyPlainChars,
+  );
+  const truncatedContent = `${bodySlice}${notice}`;
 
   return {
     text: `${titlePrefix}${truncatedContent}`,

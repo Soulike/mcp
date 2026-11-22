@@ -440,6 +440,7 @@ await describe('deepseek-web-mcp server', async () => {
         assert.ok(result.structuredContent.content.length <= 20_000);
         assert.match(result.structuredContent.content, /\[Output truncated:/);
         assert.equal(result.structuredContent.content.isWellFormed(), true);
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
       },
     );
   });
@@ -486,6 +487,58 @@ await describe('deepseek-web-mcp server', async () => {
         assert.deepEqual(result.structuredContent, {
           results: results.slice(0, 2),
         });
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
+      },
+    );
+  });
+
+  await it('enforces the output cap when Markdown fits but serialized structuredContent exceeds 20,000 characters', async () => {
+    const results = Array.from({ length: 20 }, (_, index) => ({
+      rerank_score: 2.5 - index * 0.05,
+      title: `Item ${index + 1}`,
+      url: `https://example.com/item-${index + 1}`,
+      snippet: `s${index + 1}-` + 'y'.repeat(200),
+      summary: `Summary ${index + 1}: ` + 'x'.repeat(780),
+      content: '',
+      site_name: 'Example',
+      site_icon: `https://example.com/icons/${index + 1}/` + 'i'.repeat(120),
+      date: '2026-06-01T00:00:00+00:00',
+      authority: 3,
+    }));
+
+    const stubFetch: typeof fetch = () =>
+      Promise.resolve(
+        new Response(JSON.stringify({ results }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+
+    await withClient(
+      { apiKey: 'test-api-key', fetch: stubFetch },
+      async (client) => {
+        const result = await client.callTool({
+          name: 'deepseek_search',
+          arguments: { query: 'structured payload cap' },
+        });
+
+        assert.equal(result.isError, undefined);
+        const text = getFirstTextContent(result);
+        assert.ok(text.length <= 20_000);
+        assert.match(
+          text,
+          /\[Output truncated: showing top \d+ of 20 results/i,
+        );
+
+        assert.ok(
+          typeof result.structuredContent === 'object' &&
+            result.structuredContent !== null &&
+            'results' in result.structuredContent &&
+            Array.isArray(result.structuredContent.results),
+        );
+        assert.ok(result.structuredContent.results.length > 0);
+        assert.ok(result.structuredContent.results.length < 20);
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
       },
     );
   });
@@ -556,6 +609,7 @@ await describe('deepseek-web-mcp server', async () => {
             typeof first.content === 'string',
         );
         assert.ok(first.content.length < 20_000);
+        assert.ok(JSON.stringify(result.structuredContent).length <= 20_000);
       },
     );
   });

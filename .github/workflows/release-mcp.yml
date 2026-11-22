@@ -7,16 +7,25 @@ on:
         description: Workspace directory under servers/ to release (e.g. servers/deepseek-web-mcp)
         required: true
         type: string
+      finalize_existing:
+        description: Skip npm publish and finalize missing GitHub tag/release for an already-published version on this commit
+        required: false
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
-  release:
-    name: Release MCP package
+  publish:
+    name: Validate and publish to npm
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -34,11 +43,15 @@ jobs:
         id: meta
         env:
           PACKAGE_DIR: ${{ inputs.package-dir }}
-        run: node scripts/release-mcp/src/prepare-release.ts --package-dir "$PACKAGE_DIR" --require-ref refs/heads/main
+          FINALIZE_EXISTING: ${{ inputs.finalize_existing }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-mcp/src/prepare-release.ts --package-dir "$PACKAGE_DIR" --require-ref refs/heads/main --target-sha "$GITHUB_SHA"
 
-      - run: pnpm verify
+      - if: steps.meta.outputs.skip_npm_publish != 'true'
+        run: pnpm verify
 
       - name: Pack release tarball
+        if: steps.meta.outputs.skip_npm_publish != 'true'
         env:
           PKG_NAME: ${{ steps.meta.outputs.name }}
         run: |
@@ -47,18 +60,30 @@ jobs:
           pnpm --filter "${PKG_NAME}" pack --pack-destination /tmp/npm-release
 
       - name: Publish to npm via OIDC Trusted Publishing
+        if: steps.meta.outputs.skip_npm_publish != 'true'
         run: |
           cd /tmp/npm-release
           node -v
           npm -v
           npm publish ./*.tgz --access public
 
+  finalize:
+    name: Create GitHub Release
+    needs: [publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Create GitHub Release and tag
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          PKG_NAME: ${{ steps.meta.outputs.name }}
-          PKG_VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ needs.publish.outputs.tag }}
+          PKG_NAME: ${{ needs.publish.outputs.name }}
+          PKG_VERSION: ${{ needs.publish.outputs.version }}
         run: |
           gh release create "${TAG}" \
             --target "${GITHUB_SHA}" \

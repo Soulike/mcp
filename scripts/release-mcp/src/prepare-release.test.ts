@@ -14,6 +14,16 @@ function git(cwd: string, args: readonly string[]): string {
   }).trim();
 }
 
+function getRequestUrl(input: string | URL | Request): string {
+  if (typeof input === 'string') {
+    return input;
+  }
+  if (input instanceof URL) {
+    return input.href;
+  }
+  return input.url;
+}
+
 async function writeJson(
   filePath: string,
   value: Record<string, unknown>,
@@ -39,7 +49,7 @@ async function withRepoAndBareOrigin(
   }
 }
 
-function commitAndPushMain(repoDir: string, message: string): void {
+function commitAndPushMain(repoDir: string, message: string): string {
   git(repoDir, ['add', '-A']);
   git(repoDir, [
     '-c',
@@ -51,6 +61,7 @@ function commitAndPushMain(repoDir: string, message: string): void {
     message,
   ]);
   git(repoDir, ['push', '-u', 'origin', 'main']);
+  return git(repoDir, ['rev-parse', 'HEAD']);
 }
 
 const VALID_MANIFEST = {
@@ -58,13 +69,33 @@ const VALID_MANIFEST = {
   version: '0.1.0',
   repository: {
     type: 'git',
-    url: 'https://github.com/Soulike/mcp.git',
+    url: 'git+https://github.com/Soulike/mcp.git',
     directory: 'servers/alpha-mcp',
   },
 };
 
+function createStubFetch(options: {
+  npmStatus: number;
+  githubReleaseStatus: number;
+  seenUrls?: string[] | undefined;
+}): typeof fetch {
+  return (input) => {
+    const url = getRequestUrl(input);
+    options.seenUrls?.push(url);
+    if (url.startsWith('https://registry.npmjs.org/')) {
+      return Promise.resolve(new Response('{}', { status: options.npmStatus }));
+    }
+    if (url.startsWith('https://api.github.com/repos/Soulike/mcp/releases/')) {
+      return Promise.resolve(
+        new Response('{}', { status: options.githubReleaseStatus }),
+      );
+    }
+    return Promise.reject(new Error(`Unexpected URL: ${url}`));
+  };
+}
+
 await describe('prepareRelease', async () => {
-  await it('validates metadata, npm absence (404), and missing origin tag on main', async () => {
+  await it('validates metadata, npm absence (404), and missing origin tag/release on main', async () => {
     await withRepoAndBareOrigin(async ({ repoDir }) => {
       await mkdir(join(repoDir, 'servers/alpha-mcp'), { recursive: true });
       await writeJson(
@@ -73,38 +104,34 @@ await describe('prepareRelease', async () => {
       );
       commitAndPushMain(repoDir, 'init');
 
-      let checkedUrl: string | undefined;
-      const stubFetch: typeof fetch = (input) => {
-        checkedUrl =
-          typeof input === 'string'
-            ? input
-            : input instanceof URL
-              ? input.href
-              : input.url;
-        return Promise.resolve(new Response('Not Found', { status: 404 }));
-      };
-
+      const seenUrls: string[] = [];
       const result = await prepareRelease({
         repoDir,
         packageDir: 'servers/alpha-mcp',
         ref: 'refs/heads/main',
         requireRef: 'refs/heads/main',
-        fetchFn: stubFetch,
+        fetchFn: createStubFetch({
+          npmStatus: 404,
+          githubReleaseStatus: 404,
+          seenUrls,
+        }),
       });
 
-      assert.equal(
-        checkedUrl,
+      assert.deepEqual(seenUrls, [
         'https://registry.npmjs.org/%40soulike%2Falpha-mcp/0.1.0',
-      );
+        'https://api.github.com/repos/Soulike/mcp/releases/tags/alpha-mcp%400.1.0',
+      ]);
       assert.deepEqual(result, {
         name: '@soulike/alpha-mcp',
         version: '0.1.0',
         tag: 'alpha-mcp@0.1.0',
+        skipNpmPublish: false,
+        tagExistsOnOrigin: false,
       });
     });
   });
 
-  await it('rejects non-main refs, private packages, and invalid package-dir or repository', async () => {
+  await it('rejects non-main refs, private packages, and invalid package-dir', async () => {
     await withRepoAndBareOrigin(async ({ repoDir }) => {
       await mkdir(join(repoDir, 'servers/private-mcp'), { recursive: true });
       await writeJson(join(repoDir, 'servers/private-mcp/package.json'), {
@@ -114,8 +141,10 @@ await describe('prepareRelease', async () => {
       });
       commitAndPushMain(repoDir, 'init');
 
-      const stubFetch: typeof fetch = () =>
-        Promise.resolve(new Response('Not Found', { status: 404 }));
+      const stubFetch = createStubFetch({
+        npmStatus: 404,
+        githubReleaseStatus: 404,
+      });
 
       await assert.rejects(
         () =>
@@ -151,7 +180,7 @@ await describe('prepareRelease', async () => {
     });
   });
 
-  await it('fails when the version already exists on npm, registry errors, or git tag exists on origin', async () => {
+  await it('fails normal release when npm version, GitHub release, or origin tag already exists', async () => {
     await withRepoAndBareOrigin(async ({ repoDir }) => {
       await mkdir(join(repoDir, 'servers/alpha-mcp'), { recursive: true });
       await writeJson(
@@ -165,7 +194,10 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
-            fetchFn: () => Promise.resolve(new Response('{}', { status: 200 })),
+            fetchFn: createStubFetch({
+              npmStatus: 200,
+              githubReleaseStatus: 404,
+            }),
           }),
         /already published on npm/,
       );
@@ -175,8 +207,23 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
-            fetchFn: () =>
-              Promise.resolve(new Response('Server Error', { status: 503 })),
+            fetchFn: createStubFetch({
+              npmStatus: 404,
+              githubReleaseStatus: 200,
+            }),
+          }),
+        /GitHub release "alpha-mcp@0\.1\.0" already exists/,
+      );
+
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            fetchFn: createStubFetch({
+              npmStatus: 503,
+              githubReleaseStatus: 404,
+            }),
           }),
         /Unexpected npm registry status 503/,
       );
@@ -189,10 +236,114 @@ await describe('prepareRelease', async () => {
           prepareRelease({
             repoDir,
             packageDir: 'servers/alpha-mcp',
-            fetchFn: () =>
-              Promise.resolve(new Response('Not Found', { status: 404 })),
+            fetchFn: createStubFetch({
+              npmStatus: 404,
+              githubReleaseStatus: 404,
+            }),
           }),
         /already exists on origin/,
+      );
+    });
+  });
+
+  await it('supports finalizeExisting when npm version is published and GitHub release is absent, while rejecting conflicts', async () => {
+    await withRepoAndBareOrigin(async ({ repoDir }) => {
+      await mkdir(join(repoDir, 'servers/alpha-mcp'), { recursive: true });
+      await writeJson(
+        join(repoDir, 'servers/alpha-mcp/package.json'),
+        VALID_MANIFEST,
+      );
+      const firstSha = commitAndPushMain(repoDir, 'init');
+
+      // Cannot finalize an unpublished npm version.
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            targetSha: firstSha,
+            finalizeExisting: true,
+            fetchFn: createStubFetch({
+              npmStatus: 404,
+              githubReleaseStatus: 404,
+            }),
+          }),
+        /not published on npm yet/,
+      );
+
+      // npm-present + GitHub-release-absent + no tag -> skipNpmPublish: true.
+      const resumeNoTag = await prepareRelease({
+        repoDir,
+        packageDir: 'servers/alpha-mcp',
+        targetSha: firstSha,
+        finalizeExisting: true,
+        fetchFn: createStubFetch({
+          npmStatus: 200,
+          githubReleaseStatus: 404,
+        }),
+      });
+      assert.deepEqual(resumeNoTag, {
+        name: '@soulike/alpha-mcp',
+        version: '0.1.0',
+        tag: 'alpha-mcp@0.1.0',
+        skipNpmPublish: true,
+        tagExistsOnOrigin: false,
+      });
+
+      // Tag already exists on firstSha while release is still absent -> succeeds.
+      git(repoDir, ['tag', 'alpha-mcp@0.1.0', firstSha]);
+      git(repoDir, ['push', 'origin', 'alpha-mcp@0.1.0']);
+
+      const resumeWithMatchingTag = await prepareRelease({
+        repoDir,
+        packageDir: 'servers/alpha-mcp',
+        targetSha: firstSha,
+        finalizeExisting: true,
+        fetchFn: createStubFetch({
+          npmStatus: 200,
+          githubReleaseStatus: 404,
+        }),
+      });
+      assert.deepEqual(resumeWithMatchingTag, {
+        name: '@soulike/alpha-mcp',
+        version: '0.1.0',
+        tag: 'alpha-mcp@0.1.0',
+        skipNpmPublish: true,
+        tagExistsOnOrigin: true,
+      });
+
+      // Tag pointing to a different commit is rejected.
+      await writeFile(join(repoDir, 'README.md'), '# advance\n');
+      const secondSha = commitAndPushMain(repoDir, 'advance');
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            targetSha: secondSha,
+            finalizeExisting: true,
+            fetchFn: createStubFetch({
+              npmStatus: 200,
+              githubReleaseStatus: 404,
+            }),
+          }),
+        /points to .*, expected/,
+      );
+
+      // Existing GitHub release is rejected even in finalizeExisting mode.
+      await assert.rejects(
+        () =>
+          prepareRelease({
+            repoDir,
+            packageDir: 'servers/alpha-mcp',
+            targetSha: firstSha,
+            finalizeExisting: true,
+            fetchFn: createStubFetch({
+              npmStatus: 200,
+              githubReleaseStatus: 200,
+            }),
+          }),
+        /GitHub release "alpha-mcp@0\.1\.0" already exists/,
       );
     });
   });

@@ -6,9 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   checkServerVersions,
-  compareSemver,
   getTriggeredServerPackage,
-  parseSemver,
 } from './check-server-versions.ts';
 
 function git(repoDir: string, args: readonly string[]): string {
@@ -51,48 +49,6 @@ async function withTempRepo(
     await rm(repoDir, { recursive: true, force: true });
   }
 }
-
-await describe('semver utilities', async () => {
-  await it('parses valid semver strings and rejects invalid formats', () => {
-    assert.deepEqual(parseSemver('1.2.3'), {
-      major: 1,
-      minor: 2,
-      patch: 3,
-      prerelease: [],
-    });
-    assert.deepEqual(parseSemver('0.1.0-alpha.1+build.5'), {
-      major: 0,
-      minor: 1,
-      patch: 0,
-      prerelease: ['alpha', 1],
-    });
-    assert.equal(parseSemver('v1.2.3'), undefined);
-    assert.equal(parseSemver('01.2.3'), undefined);
-    assert.equal(parseSemver('1.2'), undefined);
-  });
-
-  await it('orders release and prerelease versions per SemVer 2.0.0', () => {
-    const order = [
-      '0.1.0-alpha',
-      '0.1.0-alpha.1',
-      '0.1.0-beta.2',
-      '0.1.0-beta.11',
-      '0.1.0-rc.1',
-      '0.1.0',
-      '0.1.1',
-      '0.2.0',
-      '1.0.0',
-    ];
-    for (let index = 0; index < order.length - 1; index++) {
-      const lower = parseSemver(order[index] ?? '');
-      const higher = parseSemver(order[index + 1] ?? '');
-      assert.ok(lower && higher);
-      assert.ok(compareSemver(higher, lower) > 0);
-      assert.ok(compareSemver(lower, higher) < 0);
-      assert.equal(compareSemver(lower, lower), 0);
-    }
-  });
-});
 
 await describe('getTriggeredServerPackage', async () => {
   await it('triggers on publishable source/docs/manifest files and ignores src/**/*.test.ts', () => {
@@ -172,6 +128,17 @@ await describe('checkServerVersions against Git revisions', async () => {
       assert.throws(
         () => checkServerVersions({ repoDir, baseRev, headRev: downgradeRev }),
         /baseline: 1\.2\.0, current: 1\.1\.9/,
+      );
+
+      await writeJson(join(repoDir, 'servers/alpha-mcp/package.json'), {
+        name: '@soulike/alpha-mcp',
+        version: 'v1.2.1',
+      });
+      const prefixedRev = commitAll(repoDir, 'non-canonical v prefix');
+
+      assert.throws(
+        () => checkServerVersions({ repoDir, baseRev, headRev: prefixedRev }),
+        /invalid Semver version "v1\.2\.1"/,
       );
 
       await writeJson(join(repoDir, 'servers/alpha-mcp/package.json'), {

@@ -38,6 +38,7 @@ jobs:
           runtime: node@24
           install: false
           save-cache: false
+      - run: pnpm install --filter @repo/check-server-versions --frozen-lockfile
       - name: Verify MCP server versions
         env:
           EVENT_NAME: ${{ github.event_name }}

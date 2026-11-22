@@ -12,9 +12,13 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/**/*.test.ts\""
   },
+  "dependencies": {
+    "semver": "catalog:"
+  },
   "devDependencies": {
     "@repo/tsconfig": "workspace:*",
     "@types/node": "catalog:",
+    "@types/semver": "catalog:",
     "typescript": "catalog:"
   }
 }

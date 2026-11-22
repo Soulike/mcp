@@ -1,106 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import semver from 'semver';
 
-export interface ParsedSemver {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease: readonly (number | string)[];
-}
-
-const SEMVER_PATTERN =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
-
-const NUMERIC_IDENT_PATTERN = /^\d+$/;
 const SERVER_TEST_PATH_PATTERN =
   /^servers\/[^/]+\/src\/(?:.*\/)?[^/]+\.test\.ts$/;
 
-export function parseSemver(version: string): ParsedSemver | undefined {
-  const match = SEMVER_PATTERN.exec(version);
-  if (match === null) {
-    return undefined;
-  }
-
-  const majorText = match[1];
-  const minorText = match[2];
-  const patchText = match[3];
-  if (
-    majorText === undefined ||
-    minorText === undefined ||
-    patchText === undefined
-  ) {
-    return undefined;
-  }
-
-  const prereleaseRaw = match[4];
-  const prerelease: (number | string)[] =
-    prereleaseRaw === undefined
-      ? []
-      : prereleaseRaw
-          .split('.')
-          .map((ident) =>
-            NUMERIC_IDENT_PATTERN.test(ident) ? Number(ident) : ident,
-          );
-
-  return {
-    major: Number(majorText),
-    minor: Number(minorText),
-    patch: Number(patchText),
-    prerelease,
-  };
-}
-
-export function compareSemver(a: ParsedSemver, b: ParsedSemver): number {
-  if (a.major !== b.major) {
-    return a.major - b.major;
-  }
-  if (a.minor !== b.minor) {
-    return a.minor - b.minor;
-  }
-  if (a.patch !== b.patch) {
-    return a.patch - b.patch;
-  }
-
-  const aPre = a.prerelease;
-  const bPre = b.prerelease;
-  if (aPre.length === 0 && bPre.length === 0) {
-    return 0;
-  }
-  if (aPre.length === 0) {
-    return 1;
-  }
-  if (bPre.length === 0) {
-    return -1;
-  }
-
-  const maxLen = Math.max(aPre.length, bPre.length);
-  for (let index = 0; index < maxLen; index++) {
-    const aIdent = aPre[index];
-    const bIdent = bPre[index];
-    if (aIdent === undefined) {
-      return -1;
-    }
-    if (bIdent === undefined) {
-      return 1;
-    }
-    if (aIdent === bIdent) {
-      continue;
-    }
-
-    if (typeof aIdent === 'number' && typeof bIdent === 'number') {
-      return aIdent - bIdent;
-    }
-    if (typeof aIdent === 'number') {
-      return -1;
-    }
-    if (typeof bIdent === 'number') {
-      return 1;
-    }
-    return aIdent < bIdent ? -1 : 1;
-  }
-
-  return 0;
+function isStrictSemver(version: string): boolean {
+  return (
+    version.trim() === version &&
+    !/^[=v]/i.test(version) &&
+    semver.valid(version) !== null
+  );
 }
 
 export function getTriggeredServerPackage(
@@ -212,8 +123,7 @@ export function checkServerVersions(options: {
 
     checkedPackages.push(packageDir);
 
-    const headSemver = parseSemver(headManifest.version);
-    if (headSemver === undefined) {
+    if (!isStrictSemver(headManifest.version)) {
       failures.push(
         `servers/${packageDir}/package.json has invalid Semver version "${headManifest.version}".`,
       );
@@ -229,15 +139,14 @@ export function checkServerVersions(options: {
       continue;
     }
 
-    const baseSemver = parseSemver(baseManifest.version);
-    if (baseSemver === undefined) {
+    if (!isStrictSemver(baseManifest.version)) {
       failures.push(
         `Baseline servers/${packageDir}/package.json has invalid Semver version "${baseManifest.version}".`,
       );
       continue;
     }
 
-    if (compareSemver(headSemver, baseSemver) <= 0) {
+    if (!semver.gt(headManifest.version, baseManifest.version)) {
       failures.push(
         `servers/${packageDir} changed without bumping package.json version (baseline: ${baseManifest.version}, current: ${headManifest.version}).`,
       );
